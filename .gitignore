@@ -1,5 +1,17 @@
-# Project exclude paths
-/.gradle/
-/app/build/
-/app/build/intermediates/javac/debug/compileDebugJavaWithJavac/classes/
-/app/build/intermediates/javac/debugAndroidTest/compileDebugAndroidTestJavaWithJavac/classes/
+# Android / Gradle local files
+.gradle/
+.gradle-user/
+.idea/
+.kotlin/
+local.properties
+
+# Local notes
+DEV_NOTES_LOCAL.md
+
+# Build output
+build/
+app/build/
+
+# OS files
+.DS_Store
+Thumbs.db
