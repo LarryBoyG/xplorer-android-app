@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="xiro_green">#6BD224</color>
+    <color name="xiro_background">#1F1A1F</color>
+    <color name="xiro_surface">#2A232B</color>
+    <color name="xiro_nav_gray">#D3D3D3</color>
+    <color name="xiro_nav_text">#1B1B1B</color>
+</resources>
