@@ -1,6 +1,7 @@
 package com.example.xirolite
 
 import android.content.Context
+import android.os.Build
 import android.net.ConnectivityManager
 import android.net.LinkAddress
 import android.net.NetworkCapabilities
@@ -62,11 +63,24 @@ class DroneNetworkDetector(
     }
 
     private fun detectWifiSignalText(): String {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return "Unknown"
+        val caps = cm.getNetworkCapabilities(network)
+
+        val capabilityRssi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            caps?.signalStrength?.takeIf { it > -127 }
+        } else {
+            null
+        }
+
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            ?: return "Unknown"
-        val rssi = runCatching { wifiManager.connectionInfo.rssi }.getOrNull()
-            ?: return "Unknown"
-        if (rssi <= -127) return "Unknown"
+        val legacyRssi = wifiManager?.let {
+            @Suppress("DEPRECATION")
+            runCatching { it.connectionInfo.rssi }.getOrNull()
+        }?.takeIf { it > -127 }
+
+        val rssi = capabilityRssi ?: legacyRssi ?: return "Unknown"
+
         return when {
             rssi >= -55 -> "Excellent"
             rssi >= -65 -> "Strong"

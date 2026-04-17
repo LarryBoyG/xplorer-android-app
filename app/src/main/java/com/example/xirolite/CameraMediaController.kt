@@ -36,7 +36,8 @@ data class CameraMediaItem(
     val previewUrl: String?,
     val downloadUrl: String,
     val detail: String = "",
-    val source: String = ""
+    val source: String = "",
+    val previewUrls: List<String> = previewUrl?.let(::listOf) ?: emptyList()
 )
 
 data class CameraLibraryState(
@@ -337,40 +338,83 @@ class CameraMediaController(
             items += buildMediaItem(host, name, MediaKind.VIDEO, result.action)
         }
 
-        return items.distinctBy { it.downloadUrl }
+        return items
+            .distinctBy { canonicalMediaKey(it.downloadUrl) }
+            .sortedByDescending { it.name }
     }
 
     private fun buildMediaItem(host: String, rawName: String, kind: MediaKind, source: String): CameraMediaItem {
-        val name = sanitizePath(rawName) ?: rawName.substringAfterLast('/')
+        val sanitizedRaw = sanitizePath(rawName) ?: rawName.substringAfterLast('/').substringBefore('?')
+        val name = sanitizedRaw
         val normalizedPath = when {
-            rawName.startsWith("http://") || rawName.startsWith("https://") -> rawName
-            rawName.startsWith("/") -> "http://$host$rawName"
-            rawName.contains("DCIM/") -> "http://$host/${rawName.trimStart('/')}"
+            sanitizedRaw.startsWith("http://") || sanitizedRaw.startsWith("https://") -> sanitizedRaw
+            sanitizedRaw.startsWith("/") -> "http://$host$sanitizedRaw"
+            sanitizedRaw.contains("DCIM/") -> "http://$host/${sanitizedRaw.trimStart('/')}"
             kind == MediaKind.PHOTO -> "http://$host/DCIM/PHOTO/${name.substringAfterLast('/')}"
             else -> "http://$host/DCIM/MOVIE/${name.substringAfterLast('/')}"
         }
-        val previewUrl = when (kind) {
-            MediaKind.PHOTO -> normalizedPath
-            MediaKind.VIDEO -> null
+        val previewUrls = when (kind) {
+            MediaKind.PHOTO -> buildPhotoPreviewCandidates(host, sanitizedRaw, normalizedPath)
+            MediaKind.VIDEO -> emptyList()
         }
         return CameraMediaItem(
             name = name.substringAfterLast('/'),
             kind = kind,
-            previewUrl = previewUrl,
+            previewUrl = previewUrls.firstOrNull(),
             downloadUrl = normalizedPath,
             detail = when (kind) {
                 MediaKind.PHOTO -> "Direct camera photo preview over Wi-Fi"
                 MediaKind.VIDEO -> "Camera SD-card video file"
             },
-            source = source
+            source = source,
+            previewUrls = previewUrls
         )
+    }
+
+    private fun buildPhotoPreviewCandidates(host: String, rawName: String, downloadUrl: String): List<String> {
+        val pathOnly = when {
+            rawName.startsWith("http://") || rawName.startsWith("https://") ->
+                rawName.substringAfter("://").substringAfter('/', "").let {
+                    if (it.isBlank()) "/DCIM/PHOTO/${rawName.substringAfterLast('/')}" else "/$it"
+                }
+            rawName.startsWith("/") -> rawName
+            rawName.contains("DCIM/") -> "/${rawName.trimStart('/')}"
+            else -> "/DCIM/PHOTO/${rawName.substringAfterLast('/')}"
+        }
+        val fileName = pathOnly.substringAfterLast('/')
+        val encodedPath = URLEncoder.encode(pathOnly, "UTF-8")
+        val encodedFileName = URLEncoder.encode(fileName, "UTF-8")
+        val hosts = linkedSetOf(host, "192.168.1.21", "192.168.1.254", "192.168.1.1")
+
+        return buildList {
+            hosts.forEach { candidateHost ->
+                add("http://$candidateHost/cgiget/screennail?filename=$encodedPath")
+                add("http://$candidateHost/cgiget/screennail?filename=$encodedFileName")
+                add("http://$candidateHost/cgiget/thumbnail?filename=$encodedPath")
+                add("http://$candidateHost/cgiget/thumbnail?filename=$encodedFileName")
+                if (candidateHost == host) {
+                    add(downloadUrl)
+                }
+            }
+        }.distinct()
     }
 
     private fun sanitizePath(value: String): String? {
         val cleaned = value.trim().trim('"', '\'', '>', '<')
         if (cleaned.isBlank()) return null
-        return cleaned.removePrefix("./")
+        val withoutPrefix = cleaned.removePrefix("./")
+        val withoutFragment = withoutPrefix.substringBefore('#')
+        val withoutQuery = withoutFragment.substringBefore('?')
+        val normalized = withoutQuery.trim()
+        if (normalized.isBlank()) return null
+        return normalized
     }
+
+    private fun canonicalMediaKey(value: String): String =
+        sanitizePath(value)
+            ?.substringAfterLast('/')
+            ?.uppercase(Locale.US)
+            ?: value.substringAfterLast('/').substringBefore('?').uppercase(Locale.US)
 
     private fun newestCapturedPhoto(beforeNames: Set<String>, items: List<CameraMediaItem>): CameraMediaItem? {
         val photos = items

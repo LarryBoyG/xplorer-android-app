@@ -9,6 +9,19 @@ data class TelemetryFieldCandidate(
     val source: String
 )
 
+data class FlightCoordinate(
+    val latitude: Double,
+    val longitude: Double
+)
+
+data class DerivedFlightTelemetry(
+    val homeCoordinate: FlightCoordinate? = null,
+    val latestCoordinate: FlightCoordinate? = null,
+    val speedMetersPerSecond: Double? = null,
+    val distanceFromHomeMeters: Double? = null,
+    val altitudeMeters: Double? = null
+)
+
 data class DroneStateUi(
     val heightText: String = "--",
     val speedText: String = "--",
@@ -61,6 +74,7 @@ data class RelayStateUi(
     val status: String = "Unknown",
     val version: String = "--",
     val currentAirWifi: String = "--",
+    val currentAirSignal: String = "--",
     val availableNetworks: List<RelayWifiCandidate> = emptyList(),
     val lastProbeText: String = "No relay probe yet"
 )

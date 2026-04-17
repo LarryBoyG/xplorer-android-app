@@ -4,14 +4,21 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,9 +35,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -48,14 +59,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.example.xirolite.data.CommandResult
 import com.example.xirolite.data.LegacyCompatibilityCatalog
 import com.example.xirolite.data.LegacyDroneProfile
 import kotlinx.coroutines.delay
@@ -70,6 +84,11 @@ class CameraViewerActivity : ComponentActivity() {
         enableEdgeToEdge()
         val host = intent.getStringExtra(EXTRA_HOST).orEmpty().ifBlank { "192.168.1.254" }
         val profile = LegacyCompatibilityCatalog.byId(intent.getStringExtra(EXTRA_PROFILE_ID))
+        val selectedHudItems = intent.getStringArrayListExtra(EXTRA_HUD_ITEMS)?.toSet()
+            ?: getSharedPreferences("xiro_lite_ui", MODE_PRIVATE)
+                .getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
+                ?.toSet()
+            ?: DEFAULT_LIVE_VIEW_HUD_ITEMS
         setContent {
             val xiroGreen = Color(0xFF6BD224)
             val scheme = darkColorScheme(
@@ -85,7 +104,12 @@ class CameraViewerActivity : ComponentActivity() {
                 onSurfaceVariant = Color(0xFFE9EDF2)
             )
             MaterialTheme(colorScheme = scheme) {
-                CameraViewerScreen(host = host, profile = profile, onExit = { finish() })
+                CameraViewerScreen(
+                    host = host,
+                    profile = profile,
+                    selectedHudItems = selectedHudItems,
+                    onExit = { finish() }
+                )
             }
         }
     }
@@ -93,25 +117,54 @@ class CameraViewerActivity : ComponentActivity() {
     companion object {
         const val EXTRA_HOST = "extra_host"
         const val EXTRA_PROFILE_ID = "extra_profile_id"
+        const val EXTRA_HUD_ITEMS = "extra_hud_items"
     }
 }
 
 @Composable
-private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit: () -> Unit) {
+@OptIn(ExperimentalLayoutApi::class)
+private fun CameraViewerScreen(
+    host: String,
+    profile: LegacyDroneProfile,
+    selectedHudItems: Set<String>,
+    onExit: () -> Unit
+) {
     val scope = rememberCoroutineScope()
     val cameraMediaController = remember(profile) { CameraMediaController(profile) }
     val context = LocalContext.current
+    val detector = remember { DroneNetworkDetector(context) }
     val localLibraryManager = remember { LocalLibraryManager(context) }
     val hjLogRecorder = remember { HjLogRecorder(localLibraryManager) }
     val exportHelper = remember { ExportHelper(context) }
     val captureFeedback = remember { CaptureFeedback(context) }
     val rtspController = remember { RtspPlayerController() }
+    val relayProbe = remember { RelayProbe() }
     val rtspUrl = profile.primaryRtspUrl(host)
+    val networkInfo = detector.detect()
+    val relayHost = remember(networkInfo, profile) {
+        profile.relayCandidates.firstOrNull() ?: "192.168.2.254"
+    }
+    val telemetryProbe = remember { TelemetryProbe() }
     val liveTelemetryPackets by LiveFlightTelemetryHub.recentPackets.collectAsState()
-    val viewerTelemetry = LegacyTelemetryDecoder.decode(liveTelemetryPackets)
+    val derivedFlightTelemetry by LiveFlightTelemetryHub.derivedTelemetry.collectAsState()
+    var hjLogStatus by remember { mutableStateOf("Idle") }
+    var relayProbeResults by remember { mutableStateOf(listOf<CommandResult>()) }
+    var last3014Result by remember { mutableStateOf<TelemetryResult?>(null) }
+    val viewerUiState = BetaInference.buildUiState(
+        networkInfo = networkInfo,
+        telemetryResults = last3014Result?.let { listOf(it) } ?: emptyList(),
+        watch3014Summary = null,
+        recentRemotePackets = liveTelemetryPackets,
+        derivedFlightTelemetry = derivedFlightTelemetry,
+        relayProbeResults = relayProbeResults,
+        flightLogStatusText = hjLogStatus
+    )
+    val viewerHudItems = viewerUiState.preflight.filter { it.label in selectedHudItems }
 
     var captureMode by remember { mutableStateOf(CaptureMode.PHOTO) }
     var isRecording by remember { mutableStateOf(false) }
+    var recordingStartedAtMs by remember { mutableLongStateOf(0L) }
+    var recordingElapsedMs by remember { mutableLongStateOf(0L) }
     var streamProfile by remember(profile.id) { mutableStateOf(StreamProfile.AUTO) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var playerActive by remember { mutableStateOf(true) }
@@ -120,13 +173,13 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
     var debugExpanded by remember { mutableStateOf(false) }
     var actionObservationInProgress by remember { mutableStateOf(false) }
     var actionExportStatus by remember { mutableStateOf("") }
+    var exitInProgress by remember { mutableStateOf(false) }
     var lastAutoReloadAtMs by remember { mutableLongStateOf(0L) }
     var lastLoggedPacketTimestamp by remember { mutableLongStateOf(0L) }
     var recoveryFrameBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var autoRecoveryPending by remember { mutableStateOf(false) }
     var autoRecoveryMessageToken by remember { mutableIntStateOf(0) }
     var lastRecoveryWasPreemptive by remember { mutableStateOf(false) }
-    var hjLogStatus by remember { mutableStateOf("Idle") }
 
     val logs = remember { mutableStateListOf<String>() }
     val uiPrefs = remember { context.getSharedPreferences("xiro_lite_ui", android.content.Context.MODE_PRIVATE) }
@@ -143,6 +196,18 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
                 )
             )
         }
+    }
+
+    fun startRecordingState() {
+        isRecording = true
+        recordingStartedAtMs = System.currentTimeMillis()
+        recordingElapsedMs = 0L
+    }
+
+    fun clearRecordingState() {
+        isRecording = false
+        recordingStartedAtMs = 0L
+        recordingElapsedMs = 0L
     }
 
     fun log(message: String) {
@@ -388,6 +453,62 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
         )
     }
 
+    suspend fun handlePrimaryCapturePress() {
+        runObservedViewerAction(
+            when {
+                captureMode == CaptureMode.PHOTO -> "Shoot Photo"
+                isRecording -> "Stop Video"
+                else -> "Start Video"
+            }
+        ) {
+            when {
+                captureMode == CaptureMode.PHOTO -> {
+                    cycleRtspSessionForCommand("Shoot Photo") {
+                        val photoResult = cameraMediaController.capturePhotoPrimed(host)
+                        lastOperation = photoResult.operation
+                        log("${photoResult.operation.title}: ${photoResult.operation.summary}")
+                        captureFeedback.playPhotoShutter()
+                        log("Photo command sent after temporarily stopping RTSP with photo-mode priming")
+                        waitForViewerHostRecovery(
+                            actionLabel = "Shoot Photo",
+                            refreshLibraryAfterRecovery = false
+                        )
+                        restoreVideoModeAfterPhoto()
+                        showTransientViewerMessage("Photo command sent")
+                    }
+                }
+
+                isRecording -> {
+                    cycleRtspSessionForCommand("Stop Video") {
+                        val op = cameraMediaController.triggerPrimaryAction(host, CaptureMode.VIDEO, true)
+                        lastOperation = op
+                        log("${op.title}: ${op.summary}")
+                        captureFeedback.playRecordStopBeep()
+                        if (op.success) clearRecordingState()
+                        log("Stop video sent after temporarily stopping RTSP")
+                        waitForViewerHostRecovery(
+                            actionLabel = "Stop Video",
+                            refreshLibraryAfterRecovery = true
+                        )
+                        showTransientViewerMessage("Stop video command sent")
+                    }
+                }
+
+                else -> {
+                    cycleRtspSessionForCommand("Start Video") {
+                        val op = cameraMediaController.triggerPrimaryAction(host, CaptureMode.VIDEO, false)
+                        lastOperation = op
+                        log("${op.title}: ${op.summary}")
+                        captureFeedback.playRecordBeep()
+                        if (op.success) startRecordingState()
+                        log("Start video sent after temporarily stopping RTSP")
+                        showTransientViewerMessage("Start video command sent")
+                    }
+                }
+            }
+        }
+    }
+
     fun exportDebugLog() {
         val report = buildString {
             appendLine("XIRO Lite Camera Viewer Debug Export")
@@ -415,6 +536,47 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
             .onFailure { error -> log("Debug export failed: ${error.message}") }
     }
 
+    suspend fun requestViewerExit() {
+        if (exitInProgress) return
+        if (actionObservationInProgress) {
+            recoveryMessage = "Wait for the current camera action to finish."
+            log("Viewer exit delayed: camera action still in progress")
+            return
+        }
+
+        exitInProgress = true
+        try {
+            if (isRecording) {
+                recoveryMessage = "Stopping video before exit..."
+                log("Viewer exit requested while recording; stopping video first")
+                playerActive = false
+                delay(450)
+                val stopOp = cameraMediaController.triggerPrimaryAction(host, CaptureMode.VIDEO, true)
+                lastOperation = stopOp
+                log("${stopOp.title}: ${stopOp.summary}")
+                if (stopOp.success) {
+                    captureFeedback.playRecordStopBeep()
+                    clearRecordingState()
+                    val recovery = cameraMediaController.waitForCameraRecovery(
+                        host = host,
+                        maxWaitMs = 12_000,
+                        pollIntervalMs = 1_200
+                    )
+                    lastOperation = recovery.operation
+                    log("${recovery.operation.title}: ${recovery.operation.summary}")
+                    if (recovery.recovered) {
+                        refreshLibrary("stop video before exit")
+                    }
+                } else {
+                    log("Stop video before exit did not confirm success; exiting anyway")
+                }
+            }
+            onExit()
+        } finally {
+            exitInProgress = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         LiveFlightTelemetryHub.start()
         lastLoggedPacketTimestamp = liveTelemetryPackets.firstOrNull()?.timestampMs ?: 0L
@@ -423,7 +585,7 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
         log("Flight log started: ${hjState.activeFile?.absolutePath ?: hjState.statusText}")
         log("Camera viewer opened")
         captureMode = CaptureMode.PHOTO
-        isRecording = false
+        clearRecordingState()
         log("Viewer opened with PHOTO selected by default")
         if (profile.id == LegacyCompatibilityCatalog.xplorer.id) {
             delay(250)
@@ -434,12 +596,46 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
         }
     }
 
+    LaunchedEffect(isRecording, recordingStartedAtMs) {
+        if (!isRecording || recordingStartedAtMs <= 0L) {
+            recordingElapsedMs = 0L
+            return@LaunchedEffect
+        }
+        while (isRecording) {
+            recordingElapsedMs = (System.currentTimeMillis() - recordingStartedAtMs).coerceAtLeast(0L)
+            delay(250)
+        }
+    }
+
     LaunchedEffect(liveTelemetryPackets.firstOrNull()?.timestampMs) {
         val latestPacket = liveTelemetryPackets.firstOrNull() ?: return@LaunchedEffect
         if (!hjLogRecorder.currentState().isActive) return@LaunchedEffect
         if (latestPacket.timestampMs == lastLoggedPacketTimestamp) return@LaunchedEffect
         lastLoggedPacketTimestamp = latestPacket.timestampMs
         hjLogStatus = hjLogRecorder.appendPacket(latestPacket).statusText
+    }
+
+    LaunchedEffect(networkInfo.localIp, relayHost) {
+        if (networkInfo.localIp?.startsWith("192.168.2.") != true) return@LaunchedEffect
+        while (true) {
+            relayProbeResults = relayProbe.probeSettingsRoot(relayHost)
+            delay(8_000)
+        }
+    }
+
+    LaunchedEffect(networkInfo.localIp, host) {
+        if (!networkInfo.localIp.isNullOrBlank()) {
+            while (true) {
+                last3014Result = telemetryProbe.httpGet(host, "cmd=3014", "CMD 3014")
+                delay(5_000)
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            relayProbe.closeSession()
+        }
     }
 
     LaunchedEffect(autoRecoveryPending, playerActive, reloadToken) {
@@ -462,6 +658,10 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
                 Log.d("CameraViewerActivity", "Flight log saved: ${file.absolutePath}")
             }
         }
+    }
+
+    BackHandler(enabled = !exitInProgress) {
+        scope.launch { requestViewerExit() }
     }
 
     CameraFullScreenSystemBars(enabled = true)
@@ -507,48 +707,69 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
                 .padding(horizontal = 14.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top
         ) {
-            Button(
-                onClick = onExit,
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6BD224), contentColor = Color.Black)
-            ) { Text("Exit") }
-            Spacer(modifier = Modifier.size(8.dp))
-            ViewerHudPill("GPS Sat", viewerTelemetry?.satellites?.toString() ?: "--")
-            Spacer(modifier = Modifier.size(8.dp))
-            ViewerHudPill("Aircraft Power", viewerTelemetry?.droneBatteryPercent?.let { "$it%" } ?: "--")
-            Spacer(modifier = Modifier.size(8.dp))
-            ViewerHudPill("Gear", viewerTelemetry?.gearSelection?.toString() ?: "--")
-            if (supportsStabilityToggle) {
-                Spacer(modifier = Modifier.size(8.dp))
-                Button(
-                    onClick = {
-                        streamProfile = if (streamProfile == StreamProfile.STABILITY) {
-                            StreamProfile.AUTO
-                        } else {
-                            StreamProfile.STABILITY
-                        }
-                        log("Live preview stream profile set to ${streamProfile.label}")
-                    },
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
-                ) {
-                    Text("Stream: ${streamProfile.label}")
-                }
+            IconButton(
+                onClick = { scope.launch { requestViewerExit() } },
+                modifier = Modifier
+                    .background(Color(0xB3252A31), RoundedCornerShape(16.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White
+                )
             }
-            Spacer(modifier = Modifier.weight(1f))
-            if (debugModeEnabled) {
-                Button(
-                    onClick = { exportDebugLog() },
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
-                ) { Text("Export Debug Log") }
-                Button(
-                    onClick = { debugExpanded = !debugExpanded },
-                    shape = RoundedCornerShape(18.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xB3252A31), contentColor = Color.White)
-                ) { Text(if (debugExpanded) "Debug ^" else "Debug v") }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        viewerHudItems.forEach { item ->
+                            ViewerHudPill(item = item)
+                        }
+                        if (supportsStabilityToggle) {
+                            Button(
+                                onClick = {
+                                    streamProfile = if (streamProfile == StreamProfile.STABILITY) {
+                                        StreamProfile.AUTO
+                                    } else {
+                                        StreamProfile.STABILITY
+                                    }
+                                    log("Live preview stream profile set to ${streamProfile.label}")
+                                },
+                                shape = RoundedCornerShape(18.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
+                            ) {
+                                Text("Stream: ${streamProfile.label}")
+                            }
+                        }
+                    }
+                }
+                if (debugModeEnabled) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        Button(
+                            onClick = { exportDebugLog() },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
+                        ) { Text("Export Debug Log") }
+                        Button(
+                            onClick = { debugExpanded = !debugExpanded },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xB3252A31), contentColor = Color.White)
+                        ) { Text(if (debugExpanded) "Debug ^" else "Debug v") }
+                    }
+                }
             }
         }
 
@@ -625,79 +846,15 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
                 }
             }
 
-            Button(
-                onClick = {
-                    scope.launch {
-                        runObservedViewerAction(
-                            when {
-                                captureMode == CaptureMode.PHOTO -> "Shoot Photo"
-                                isRecording -> "Stop Video"
-                                else -> "Start Video"
-                            }
-                        ) {
-                            when {
-                                captureMode == CaptureMode.PHOTO -> {
-                                    cycleRtspSessionForCommand("Shoot Photo") {
-                                        val photoResult = cameraMediaController.capturePhotoPrimed(host)
-                                        lastOperation = photoResult.operation
-                                        log("${photoResult.operation.title}: ${photoResult.operation.summary}")
-                                        captureFeedback.playPhotoShutter()
-                                        log("Photo command sent after temporarily stopping RTSP with photo-mode priming")
-                                        waitForViewerHostRecovery(
-                                            actionLabel = "Shoot Photo",
-                                            refreshLibraryAfterRecovery = false
-                                        )
-                                        restoreVideoModeAfterPhoto()
-                                        showTransientViewerMessage("Photo command sent")
-                                    }
-                                }
-
-                                isRecording -> {
-                                    cycleRtspSessionForCommand("Stop Video") {
-                                        val op = cameraMediaController.triggerPrimaryAction(host, CaptureMode.VIDEO, true)
-                                        lastOperation = op
-                                        log("${op.title}: ${op.summary}")
-                                        captureFeedback.playRecordStopBeep()
-                                        if (op.success) isRecording = false
-                                        log("Stop video sent after temporarily stopping RTSP")
-                                        waitForViewerHostRecovery(
-                                            actionLabel = "Stop Video",
-                                            refreshLibraryAfterRecovery = true
-                                        )
-                                        showTransientViewerMessage("Stop video command sent")
-                                    }
-                                }
-
-                                else -> {
-                                    cycleRtspSessionForCommand("Start Video") {
-                                        val op = cameraMediaController.triggerPrimaryAction(host, CaptureMode.VIDEO, false)
-                                        lastOperation = op
-                                        log("${op.title}: ${op.summary}")
-                                        captureFeedback.playRecordBeep()
-                                        if (op.success) isRecording = true
-                                        log("Start video sent after temporarily stopping RTSP")
-                                        showTransientViewerMessage("Start video command sent")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .size(96.dp)
-                    .border(3.dp, Color.White, CircleShape),
-                shape = CircleShape,
+            ViewerCaptureShutterButton(
+                captureMode = captureMode,
+                isRecording = isRecording,
+                recordingElapsedMs = recordingElapsedMs,
                 enabled = !actionObservationInProgress,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (captureMode == CaptureMode.PHOTO) Color.White else Color(0xFFF4F4F4),
-                    contentColor = Color.Black
-                )
-            ) {
-                Text(
-                    text = if (captureMode == CaptureMode.PHOTO) "Shoot" else if (isRecording) "Stop" else "Rec",
-                    fontWeight = FontWeight.Bold
-                )
-            }
+                onClick = {
+                    scope.launch { handlePrimaryCapturePress() }
+                }
+            )
 
             Button(
                 onClick = {
@@ -712,14 +869,14 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
                                 log("Switch to photo keeps the UI in PHOTO mode without sending 3001 par=0")
                             }
                             captureMode = targetMode
-                            isRecording = false
+                            clearRecordingState()
                             log("Mode changed to ${captureMode.name}")
                             showTransientViewerMessage("Mode command sent")
                         }
                     }
                 },
                 shape = RoundedCornerShape(18.dp),
-                enabled = !actionObservationInProgress,
+                enabled = !actionObservationInProgress && !isRecording,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
             ) {
                 Text(if (captureMode == CaptureMode.PHOTO) "Switch to Video" else "Switch to Photo")
@@ -817,9 +974,89 @@ private fun CameraViewerScreen(host: String, profile: LegacyDroneProfile, onExit
 }
 
 @Composable
-private fun ViewerHudPill(label: String, value: String) {
+private fun ViewerCaptureShutterButton(
+    captureMode: CaptureMode,
+    isRecording: Boolean,
+    recordingElapsedMs: Long,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (enabled && isPressed) 0.92f else 1f,
+        label = "viewerCaptureShutterScale"
+    )
+    val outerRingColor = Color.White.copy(alpha = if (enabled) 0.96f else 0.42f)
+    val outerShellColor = if (captureMode == CaptureMode.PHOTO) {
+        Color.White.copy(alpha = if (enabled) 0.14f else 0.08f)
+    } else {
+        Color.White.copy(alpha = if (enabled) 0.18f else 0.08f)
+    }
+    val buttonSize = 96.dp
+    val innerSize = if (captureMode == CaptureMode.PHOTO) 80.dp else 82.dp
+    val innerColor = if (captureMode == CaptureMode.PHOTO) {
+        Color.White.copy(alpha = if (enabled) 1f else 0.5f)
+    } else {
+        Color(0xFFE43232).copy(alpha = if (enabled) 1f else 0.5f)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(buttonSize)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .border(3.dp, outerRingColor, CircleShape)
+                .background(outerShellColor, CircleShape)
+        )
+
+        Box(
+            modifier = Modifier
+                .size(innerSize)
+                .border(
+                    width = if (captureMode == CaptureMode.PHOTO) 1.25.dp else 0.dp,
+                    color = Color.White.copy(alpha = if (enabled) 0.55f else 0.28f),
+                    shape = CircleShape
+                )
+                .background(innerColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (captureMode == CaptureMode.VIDEO && isRecording) {
+                Text(
+                    text = formatRecordingDuration(recordingElapsedMs),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
+            }
+        }
+    }
+}
+
+private fun formatRecordingDuration(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs / 1000L).coerceAtLeast(0L)
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+}
+
+@Composable
+private fun ViewerHudPill(item: PreflightItem) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xB3252A31)),
+        colors = CardDefaults.cardColors(containerColor = Color(0x9912151B)),
         shape = RoundedCornerShape(18.dp)
     ) {
         Row(
@@ -827,8 +1064,14 @@ private fun ViewerHudPill(label: String, value: String) {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(label, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
-            Text(value, color = Color.White, fontWeight = FontWeight.SemiBold)
+            if (item.label == "Wi-Fi Signal") {
+                Text("Wi-Fi", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
+                SignalStrengthBars(level = parseSignalStrengthVisual(item.value)?.level ?: 0)
+            } else {
+                StatusDot(level = resolveStatusIndicatorLevel(item.label, item.value, item.ok), size = 8.dp)
+                Text(item.label, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
+                Text(item.value, color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
@@ -874,7 +1117,9 @@ private fun CameraFullScreenSystemBars(enabled: Boolean) {
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         val controller = WindowCompat.getInsetsController(window, view) ?: return@SideEffect
+        @Suppress("DEPRECATION")
         window.statusBarColor = android.graphics.Color.BLACK
+        @Suppress("DEPRECATION")
         window.navigationBarColor = android.graphics.Color.BLACK
         controller.isAppearanceLightStatusBars = false
         controller.isAppearanceLightNavigationBars = false

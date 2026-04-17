@@ -14,10 +14,19 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,6 +37,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,6 +47,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -57,6 +69,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -82,11 +95,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Collections
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.DropdownMenu
@@ -99,9 +112,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.example.xirolite.data.CommandResult
 import com.example.xirolite.data.LegacyCompatibilityCatalog
 import com.example.xirolite.data.LegacyDroneProfile
@@ -216,12 +233,25 @@ private data class LibraryMediaInfo(
 private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     version = BuildConfig.VERSION_NAME,
     changes = listOf(
-        "Hotfix: XIRO Lite no longer forces a password dialog for UG3300 camera APs and now auto-uses the legacy default camera password 4008073888.",
-        "The legacy app evidence now lines up cleanly: it has password-dialog UI, but the bind capture also shows it silently sending the default UG3300 camera password without a visible prompt.",
-        "Manual password entry remains available for non-camera APs, so arbitrary extender targets can still be tested when the password is not known in advance.",
-        "The real legacy bind-attempt payload replay remains in place, including the warmed relay session, full candidate metadata, and single-byte 01 success handling."
+        "Altitude (Height) is now decoded from the UDP telemetry stream (u16 @ offset 33 / 10.0), matching HJ-compatible drone logs.",
+        "SD Card Remaining storage now attempts to parse from the camera's CMD 3014 summary (ID 3015), showing available space in MB when connected.",
+        "Telemetry now decodes live GPS coordinates from the HJ-compatible UDP packet layout, matching the same latitude/longitude positions previously validated through XIRO Assistant log playback.",
+        "The Telemetry page now derives live speed and distance from the packet stream instead of leaving those fields blank, so motion becomes visible as soon as GPS coordinates begin changing in flight.",
+        "Wi-Fi telemetry now reflects only the relay-to-camera signal reported by the extender, so the Telemetry page no longer mixes in the phone's own Wi-Fi strength.",
+        "Top-bar telemetry labels are now cleaner and more honest: Height is shown as Altitude, Relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.",
+        "Wi-Fi telemetry now renders with traditional signal-strength bars so the extender-to-camera link is easier to read at a glance.",
+        "Preflight status rows now include live-view HUD toggles, so selected telemetry items can be added or removed from the live-view overlay without changing code.",
+        "GPS Sat, Aircraft Power, and Flight Mode now use richer status colors in both the Preflight card and the live-view HUD, matching the requested red / yellow / green thresholds.",
+        "Live View now uses a simple left-arrow exit control, and the Settings connection card text was cleaned up to reduce clutter.",
+        "The live-view HUD now sits in line with the exit control instead of dropping lower into the image area, making the selected telemetry chips easier to read while flying.",
+        "The Library tab now gives local media a more traditional gallery feel with swipe navigation, local video playback controls, and first-frame thumbnails for downloaded videos.",
+        "Remote camera photos now try legacy-style preview candidates before download, and the main navigation now slides both the page content and the selected tab highlight.",
+        "Exiting Live View while a video recording is active now sends a stop-video command first, matching the legacy app more closely and reducing the chance of half-finished video files.",
+        "Live View now uses a camera-style shutter control: photo mode gets a white dual-ring capture button with press feedback, and video mode gets a red record button with a live elapsed timer while recording.",
+        "Camera SD library parsing now strips query-style suffixes like ?del=1 before treating entries as real media, reducing ghost duplicates and unsafe remote-media handling."
     ),
     knownIssues = listOf(
+        "FOV in the legacy app appears to be a camera-side field-of-view or digital zoom callback, not core flight telemetry, so XIRO Lite is leaving it pending until the camera-side query is mapped.",
         "Xplorer 4K still needs real hardware validation to confirm whether its live-view timing matches the regular Xplorer and Gimbal flow.",
         "Xplorer 4K time sync is still intentionally excluded until its Ambarella-side transport is captured cleanly.",
         "Freshly reset range extenders still need real hardware verification to confirm the full bind flow matches the legacy app across firmware variants.",
@@ -231,14 +261,77 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Remote video thumbnail and screennail transport is still not fully decoded, so remote camera videos remain download-first instead of preview-first.",
         "Remote media info is still best-effort and may show Unknown when the camera does not return reliable file headers or stream metadata.",
         "Remote battery is still unresolved because the legacy app used a separate callback path that has not been decoded yet.",
+        "Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.",
         "The current flight-mode HUD label still follows the validated legacy pattern of 0 sats = Attitude and nonzero sats = GPS Mode, but deeper control-state decoding is still in progress.",
         "HJ logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.",
         "UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.",
-        "Wi-Fi signal strength is currently based on the Android device's Wi-Fi RSSI to the XIRO network, not a decoded relay-specific signal field.",
         "Deeper legacy warnings like return-home, compass fault, and optical-flow fault are still intentionally excluded until their raw fields are validated.",
         "XIRO Lite still approximates the legacy keepalive by refreshing the RTSP session proactively instead of issuing true RTSP GET_PARAMETER on the active ExoPlayer session."
     )
 )
+
+@Composable
+private fun XiroBottomNavigationBar(
+    selectedTab: BetaTab,
+    onSelect: (BetaTab) -> Unit
+) {
+    val tabs = BetaTab.values()
+    NavigationBar(
+        containerColor = Color(0xFF252A31),
+        tonalElevation = 0.dp,
+        windowInsets = WindowInsets.navigationBars
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .height(62.dp)
+        ) {
+            val itemWidth = maxWidth / tabs.size
+            val indicatorOffset by animateDpAsState(
+                targetValue = itemWidth * tabs.indexOf(selectedTab),
+                label = "nav_indicator_offset"
+            )
+
+            Box(
+                modifier = Modifier
+                    .offset(x = indicatorOffset)
+                    .width(itemWidth)
+                    .fillMaxHeight()
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(Color(0xFF313844))
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                tabs.forEach { tab ->
+                    val selected = tab == selectedTab
+                    val contentColor by animateColorAsState(
+                        targetValue = if (selected) Color(0xFF6BD224) else Color(0xFFBDC4CF),
+                        label = "nav_content_color"
+                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(22.dp))
+                            .clickable { onSelect(tab) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        when (tab) {
+                            BetaTab.CAMERA -> Icon(Icons.Outlined.CameraAlt, contentDescription = tab.title, tint = contentColor)
+                            BetaTab.TELEMETRY -> Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = tab.title, tint = contentColor)
+                            BetaTab.LIBRARY -> Icon(Icons.Outlined.Collections, contentDescription = tab.title, tint = contentColor)
+                            BetaTab.SETTINGS -> Icon(Icons.Outlined.Settings, contentDescription = tab.title, tint = contentColor)
+                        }
+                        Text(tab.title, color = contentColor, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun FullScreenSystemBars(enabled: Boolean) {
@@ -246,7 +339,9 @@ private fun FullScreenSystemBars(enabled: Boolean) {
     SideEffect {
         val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
         val controller = WindowCompat.getInsetsController(window, view) ?: return@SideEffect
+        @Suppress("DEPRECATION")
         window.statusBarColor = android.graphics.Color.parseColor("#252A31")
+        @Suppress("DEPRECATION")
         window.navigationBarColor = android.graphics.Color.parseColor("#252A31")
         controller.isAppearanceLightStatusBars = false
         controller.isAppearanceLightNavigationBars = false
@@ -330,6 +425,7 @@ private fun XiroLiteBetaApp() {
     var hjLogStatusText by remember { mutableStateOf("Idle") }
 
     val remotePackets by LiveFlightTelemetryHub.recentPackets.collectAsState()
+    val derivedFlightTelemetry by LiveFlightTelemetryHub.derivedTelemetry.collectAsState()
     val remoteUdpRunning by LiveFlightTelemetryHub.isRunning.collectAsState()
     val liveLogs = remember { mutableStateListOf<String>() }
 
@@ -349,6 +445,13 @@ private fun XiroLiteBetaApp() {
     val releasePrefs = remember { context.getSharedPreferences("xiro_lite_release_notes", android.content.Context.MODE_PRIVATE) }
     val uiPrefs = remember { context.getSharedPreferences("xiro_lite_ui", android.content.Context.MODE_PRIVATE) }
     var debugModeEnabled by remember { mutableStateOf(uiPrefs.getBoolean("debug_mode_enabled", false)) }
+    var selectedLiveHudItems by remember {
+        mutableStateOf(
+            uiPrefs.getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
+                ?.toSet()
+                ?: DEFAULT_LIVE_VIEW_HUD_ITEMS
+        )
+    }
     var showDebugModeWarningDialog by remember { mutableStateOf(false) }
     var showReleaseNotesDialog by remember {
         mutableStateOf(
@@ -375,11 +478,11 @@ private fun XiroLiteBetaApp() {
 
     val latestRemotePacket = remotePackets.firstOrNull()
     val betaUiState = BetaInference.buildUiState(
-        host = host,
         networkInfo = networkInfo,
         telemetryResults = telemetryResults,
         watch3014Summary = watch3014Summary,
         recentRemotePackets = remotePackets,
+        derivedFlightTelemetry = derivedFlightTelemetry,
         relayProbeResults = relayProbeResults,
         flightLogStatusText = hjLogStatusText
     )
@@ -480,6 +583,14 @@ private fun XiroLiteBetaApp() {
         appendLog("Debug mode ${if (enabled) "enabled" else "disabled"}")
     }
 
+    fun setLiveHudSelection(label: String, enabled: Boolean) {
+        val updated = selectedLiveHudItems.toMutableSet().apply {
+            if (enabled) add(label) else remove(label)
+        }.toSet()
+        selectedLiveHudItems = updated
+        uiPrefs.edit().putStringSet(LIVE_VIEW_HUD_PREF_KEY, updated).apply()
+    }
+
     suspend fun performLibraryRefresh(reason: String) {
         libraryRefreshing = true
         val state = cameraMediaController.loadLibrary(host)
@@ -527,6 +638,22 @@ private fun XiroLiteBetaApp() {
                 }
                 else -> Unit
             }
+        }
+    }
+
+    LaunchedEffect(extenderSettingsEnabled, selectedTab, settingsPage, relayHost) {
+        if (!extenderSettingsEnabled) return@LaunchedEffect
+
+        while (true) {
+            val shouldBackgroundProbe =
+                selectedTab != BetaTab.SETTINGS ||
+                    settingsPage == SettingsPage.ROOT
+
+            if (shouldBackgroundProbe) {
+                relayProbeResults = relayProbe.probeSettingsRoot(relayHost)
+            }
+
+            delay(8_000)
         }
     }
 
@@ -868,11 +995,12 @@ private fun XiroLiteBetaApp() {
     }
 
     selectedLibraryPreview?.let { item ->
-        LocalPhotoPreviewDialog(
-            item = item,
+        LocalMediaPreviewDialog(
+            items = localLibraryItems,
+            initialItemId = item.id,
             onDismiss = { selectedLibraryPreview = null },
-            onDelete = {
-                deleteLocalLibraryItem(item)
+            onDelete = { current ->
+                deleteLocalLibraryItem(current)
                 selectedLibraryPreview = null
             }
         )
@@ -987,63 +1115,56 @@ private fun XiroLiteBetaApp() {
                         XiroBrandHeader()
                     },
                     bottomBar = {
-                        NavigationBar(
-                            containerColor = Color(0xFF252A31),
-                            contentColor = Color(0xFFE9EDF2),
-                            tonalElevation = 0.dp,
-                            windowInsets = WindowInsets.navigationBars
-                        ) {
-                            BetaTab.values().forEach { tab ->
-                                NavigationBarItem(
-                                    selected = selectedTab == tab,
-                                    onClick = { selectedTab = tab },
-                                    icon = {
-                                        when (tab) {
-                                            BetaTab.CAMERA -> Icon(Icons.Outlined.CameraAlt, contentDescription = tab.title)
-                                            BetaTab.TELEMETRY -> Icon(Icons.Outlined.ShowChart, contentDescription = tab.title)
-                                            BetaTab.LIBRARY -> Icon(Icons.Outlined.Collections, contentDescription = tab.title)
-                                            BetaTab.SETTINGS -> Icon(Icons.Outlined.Settings, contentDescription = tab.title)
-                                        }
-                                    },
-                                    label = { Text(tab.title) },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = Color(0xFF6BD224),
-                                        selectedTextColor = Color(0xFF6BD224),
-                                        indicatorColor = Color(0xFF313844),
-                                        unselectedIconColor = Color(0xFFBDC4CF),
-                                        unselectedTextColor = Color(0xFFBDC4CF)
-                                    )
-                                )
-                            }
-                        }
+                        XiroBottomNavigationBar(
+                            selectedTab = selectedTab,
+                            onSelect = { selectedTab = it }
+                        )
                     }
                 ) { innerPadding ->
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                            .padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        if (debugModeEnabled) {
-                            item {
-                                HeroCard(
-                                    selectedProfile = selectedProfile,
-                                    host = host,
-                                    onHostChange = { host = it },
-                                    networkInfo = networkInfo,
-                                    rtspUrl = rtspUrl,
-                                    advancedVisible = advancedVisible,
-                                    onToggleAdvanced = { advancedVisible = !advancedVisible },
-                                    debugModeEnabled = debugModeEnabled
-                                )
+                    AnimatedContent(
+                        targetState = selectedTab,
+                        transitionSpec = {
+                            if (targetState.ordinal > initialState.ordinal) {
+                                slideInHorizontally { it } + fadeIn() togetherWith slideOutHorizontally { -it / 3 } + fadeOut()
+                            } else {
+                                slideInHorizontally { -it } + fadeIn() togetherWith slideOutHorizontally { it / 3 } + fadeOut()
                             }
-                        }
-                    if (selectedTab == BetaTab.TELEMETRY) {
-                        item { PreflightCard(betaUiState.preflight, betaUiState.warnings) }
-                    }
+                        },
+                        label = "tab_content"
+                    ) { activeTab ->
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            if (debugModeEnabled) {
+                                item {
+                                    HeroCard(
+                                        selectedProfile = selectedProfile,
+                                        host = host,
+                                        onHostChange = { host = it },
+                                        networkInfo = networkInfo,
+                                        rtspUrl = rtspUrl,
+                                        advancedVisible = advancedVisible,
+                                        onToggleAdvanced = { advancedVisible = !advancedVisible },
+                                        debugModeEnabled = debugModeEnabled
+                                    )
+                                }
+                            }
+                            if (activeTab == BetaTab.TELEMETRY) {
+                                item {
+                                    PreflightCard(
+                                        items = betaUiState.preflight,
+                                        warnings = betaUiState.warnings,
+                                        selectedHudItems = selectedLiveHudItems,
+                                        onToggleHudItem = ::setLiveHudSelection
+                                    )
+                                }
+                            }
 
-                    when (selectedTab) {
+                            when (activeTab) {
                         BetaTab.CAMERA -> {
                             item {
                                 CameraHomeCard(
@@ -1057,6 +1178,10 @@ private fun XiroLiteBetaApp() {
                                         context.startActivity(Intent(context, CameraViewerActivity::class.java).apply {
                                             putExtra(CameraViewerActivity.EXTRA_HOST, host)
                                             putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
+                                            putStringArrayListExtra(
+                                                CameraViewerActivity.EXTRA_HUD_ITEMS,
+                                                ArrayList(selectedLiveHudItems)
+                                            )
                                         })
                                     }
                                 )
@@ -1400,6 +1525,7 @@ private fun XiroLiteBetaApp() {
             }
         }
     }
+}
 }
 }
 
@@ -1783,7 +1909,6 @@ private fun ConnectionStatusCard(connectionStatus: String) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Connection", style = MaterialTheme.typography.titleMedium)
             Text(connectionStatus)
-            Text("XIRO Lite uses the active Wi-Fi path automatically. Advanced IP details are hidden to reduce ambiguity.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -1835,7 +1960,7 @@ private fun TopTelemetryBar(state: DroneStateUi) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Legacy HUD-inspired Top Bar", style = MaterialTheme.typography.titleMedium)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                HudChip("Height", state.heightText)
+                HudChip("Altitude", state.heightText)
                 HudChip("Speed", state.speedText)
                 HudChip("Distance", state.distanceText)
                 HudChip("Voltage", state.voltageText)
@@ -1843,7 +1968,7 @@ private fun TopTelemetryBar(state: DroneStateUi) {
                 HudChip("Flight Mode", state.flightModeText)
                 HudChip("GPS", state.gpsText)
                 HudChip("Aircraft Power", state.droneBatteryText)
-                HudChip("Relay", state.relaySignalText)
+                HudChip("Wi-Fi", state.relaySignalText)
                 HudChip("SD Card", state.sdCardText)
                 HudChip("Remote", state.remoteBatteryText)
                 HudChip("Gear", state.gearText)
@@ -1859,19 +1984,29 @@ private fun TopTelemetryBar(state: DroneStateUi) {
 @Composable
 private fun HudChip(label: String, value: String) {
     Card {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelSmall)
-            Text(value, style = MaterialTheme.typography.bodyMedium)
+            if (label == "Wi-Fi") {
+                SignalStrengthValue(value = value)
+            } else {
+                Text(value, style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
 
 
 @Composable
-private fun PreflightCard(items: List<PreflightItem>, warnings: List<FlightWarning>) {
+private fun PreflightCard(
+    items: List<PreflightItem>,
+    warnings: List<FlightWarning>,
+    selectedHudItems: Set<String>,
+    onToggleHudItem: (String, Boolean) -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Preflight Status", style = MaterialTheme.typography.titleMedium)
+            Text("Toggle any status to show or hide it in Live View.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFD7DCE3))
             if (warnings.isNotEmpty()) {
                 warnings.forEach { warning ->
                     PreflightWarningRow(warning)
@@ -1880,17 +2015,22 @@ private fun PreflightCard(items: List<PreflightItem>, warnings: List<FlightWarni
             }
             items.forEach { item ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(if (item.ok) Color(0xFF4CAF50) else Color(0xFFFF9800))
-                    )
+                    StatusDot(level = resolveStatusIndicatorLevel(item.label, item.value, item.ok))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column {
-                        Text("${item.label}: ${item.value}")
+                    Column(modifier = Modifier.weight(1f)) {
+                        if (item.label == "Wi-Fi Signal") {
+                            Text(item.label)
+                            SignalStrengthValue(value = item.value)
+                        } else {
+                            Text("${item.label}: ${item.value}")
+                        }
                         if (item.detail.isNotBlank()) Text(item.detail, style = MaterialTheme.typography.bodySmall)
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = item.label in selectedHudItems,
+                        onCheckedChange = { enabled -> onToggleHudItem(item.label, enabled) }
+                    )
                 }
             }
         }
@@ -2940,10 +3080,9 @@ private fun LocalLibraryThumbnail(
     onOpenPreview: (LocalLibraryItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val file = item.hdFile ?: item.previewFile
-    val bitmap = remember(file?.absolutePath) {
-        file?.takeIf { it.exists() && item.kind == MediaKind.PHOTO }?.let { android.graphics.BitmapFactory.decodeFile(it.absolutePath) }
-    }
+    val bitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.id, item.hdFile?.absolutePath, item.previewFile?.absolutePath) {
+        value = withContext(Dispatchers.IO) { loadLocalPreviewBitmap(item) }
+    }.value
     if (bitmap != null) {
         Box(
             modifier = modifier
@@ -2967,25 +3106,37 @@ private fun LocalLibraryThumbnail(
                 .clickable { onOpenPreview(item) },
             contentAlignment = Alignment.Center
         ) {
-            Text(if (item.kind == MediaKind.VIDEO) "Video" else "Preview", color = Color.White)
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp,
+                color = Color.White
+            )
         }
     }
 }
 
 @Composable
-private fun LocalPhotoPreviewDialog(
-    item: LocalLibraryItem,
+private fun LocalMediaPreviewDialog(
+    items: List<LocalLibraryItem>,
+    initialItemId: String,
     onDismiss: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: (LocalLibraryItem) -> Unit
 ) {
+    if (items.isEmpty()) return
     var showMenu by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
-    val previewBitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.id) {
-        value = withContext(Dispatchers.IO) { loadLocalPreviewBitmap(item) }
+    val initialPage = remember(items, initialItemId) {
+        items.indexOfFirst { it.id == initialItemId }.takeIf { it >= 0 } ?: 0
+    }
+    val pagerState = rememberPagerState(initialPage = initialPage) { items.size }
+    val currentItem = items.getOrNull(pagerState.currentPage) ?: return
+    val previewBitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, currentItem.id, currentItem.hdFile?.absolutePath, currentItem.previewFile?.absolutePath) {
+        value = withContext(Dispatchers.IO) { loadLocalPreviewBitmap(currentItem) }
     }.value
-    val mediaInfo = androidx.compose.runtime.produceState<LibraryMediaInfo?>(initialValue = null, showInfo, item.id) {
-        value = if (showInfo) withContext(Dispatchers.IO) { buildLocalLibraryMediaInfo(item) } else null
+    val mediaInfo = androidx.compose.runtime.produceState<LibraryMediaInfo?>(initialValue = null, showInfo, currentItem.id) {
+        value = if (showInfo) withContext(Dispatchers.IO) { buildLocalLibraryMediaInfo(currentItem) } else null
     }.value
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -2995,25 +3146,44 @@ private fun LocalPhotoPreviewDialog(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            previewBitmap?.let {
-                Image(
-                    bitmap = it.asImageBitmap(),
-                    contentDescription = item.name,
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val pageItem = items[page]
+                Box(
                     modifier = Modifier
-                        .align(Alignment.Center)
-                        .fillMaxWidth(),
-                    contentScale = ContentScale.Fit
-                )
-            } ?: Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = if (item.kind == MediaKind.VIDEO) "Local video preview unavailable" else "Preview unavailable",
-                    color = Color.White
-                )
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (pageItem.kind == MediaKind.VIDEO) {
+                        LocalVideoPlayer(
+                            item = pageItem,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.Center)
+                        )
+                    } else {
+                        val pageBitmap = if (pageItem.id == currentItem.id) {
+                            previewBitmap
+                        } else {
+                            androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, pageItem.id, pageItem.hdFile?.absolutePath, pageItem.previewFile?.absolutePath) {
+                                value = withContext(Dispatchers.IO) { loadLocalPreviewBitmap(pageItem) }
+                            }.value
+                        }
+                        if (pageBitmap != null) {
+                            Image(
+                                bitmap = pageBitmap.asImageBitmap(),
+                                contentDescription = pageItem.name,
+                                modifier = Modifier.fillMaxWidth(),
+                                contentScale = ContentScale.Fit
+                            )
+                        } else {
+                            Text("Preview unavailable", color = Color.White)
+                        }
+                    }
+                }
             }
             Row(
                 modifier = Modifier
@@ -3054,11 +3224,20 @@ private fun LocalPhotoPreviewDialog(
                             text = { Text("Delete") },
                             onClick = {
                                 showMenu = false
-                                onDelete()
+                                onDelete(currentItem)
                             }
                         )
                     }
                 }
+            }
+            if (items.size > 1) {
+                Text(
+                    text = "${pagerState.currentPage + 1} / ${items.size}",
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 22.dp),
+                    color = Color.White
+                )
             }
         }
     }
@@ -3068,6 +3247,51 @@ private fun LocalPhotoPreviewDialog(
             onDismiss = { showInfo = false }
         )
     }
+}
+
+@Composable
+private fun LocalVideoPlayer(
+    item: LocalLibraryItem,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val videoFile = item.hdFile ?: item.previewFile
+    if (videoFile == null || !videoFile.exists()) {
+        Box(
+            modifier = modifier.padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("Local video unavailable", color = Color.White)
+        }
+        return
+    }
+
+    val player = remember(videoFile.absolutePath) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(Uri.fromFile(videoFile)))
+            prepare()
+            playWhenReady = false
+        }
+    }
+
+    DisposableEffect(player) {
+        onDispose { player.release() }
+    }
+
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                useController = true
+                controllerAutoShow = true
+                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                this.player = player
+            }
+        },
+        update = { view ->
+            view.player = player
+        }
+    )
 }
 
 
@@ -3206,8 +3430,8 @@ private fun CameraThumbnail(
     onOpenPreview: (CameraMediaItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val previewUrl = item.previewUrl
-    if (previewUrl.isNullOrBlank()) {
+    val previewUrls = item.previewUrls.ifEmpty { listOfNotNull(item.previewUrl) }
+    if (previewUrls.isEmpty()) {
         Box(
             modifier
                 .clip(RoundedCornerShape(10.dp))
@@ -3219,8 +3443,8 @@ private fun CameraThumbnail(
         }
         return
     }
-    val imageState = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, previewUrl) {
-        value = loadBitmapFromUrl(previewUrl)
+    val imageState = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.name, *previewUrls.toTypedArray()) {
+        value = withContext(Dispatchers.IO) { loadBitmapFromUrls(previewUrls) }
     }
     val bitmap = imageState.value
     if (bitmap == null) {
@@ -3231,14 +3455,18 @@ private fun CameraThumbnail(
                 .clickable { onOpenPreview(item) },
             contentAlignment = Alignment.Center
         ) {
-            Text("Load", color = Color.White)
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp,
+                color = Color.White
+            )
         }
     } else {
         Box(
             modifier
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF1F232A))
-                .clickable(enabled = item.kind == MediaKind.PHOTO) { onOpenPreview(item) },
+                .clickable { onOpenPreview(item) },
             contentAlignment = Alignment.Center
         ) {
             Image(
@@ -3259,9 +3487,9 @@ private fun RemotePhotoPreviewDialog(
 ) {
     var showMenu by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
-    val previewUrl = item.previewUrl ?: item.downloadUrl
-    val bitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, previewUrl, item.kind) {
-        value = if (item.kind == MediaKind.PHOTO) loadBitmapFromUrl(previewUrl) else null
+    val previewUrls = item.previewUrls.ifEmpty { listOfNotNull(item.previewUrl, item.downloadUrl) }
+    val bitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.name, *previewUrls.toTypedArray()) {
+        value = if (item.kind == MediaKind.PHOTO) withContext(Dispatchers.IO) { loadBitmapFromUrls(previewUrls) } else null
     }.value
     val mediaInfo = androidx.compose.runtime.produceState<LibraryMediaInfo?>(initialValue = null, showInfo, item.name) {
         value = if (showInfo) withContext(Dispatchers.IO) { buildRemoteLibraryMediaInfo(item) } else null
@@ -3296,7 +3524,7 @@ private fun RemotePhotoPreviewDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = if (item.kind == MediaKind.PHOTO) "Preview unavailable" else "Remote camera videos can be downloaded to local XIRO storage for playback.",
+                            text = if (item.kind == MediaKind.PHOTO) "Preview still loading or unavailable" else "Remote camera videos can be downloaded to local XIRO storage for playback.",
                             color = Color.White
                         )
                     }
@@ -3372,7 +3600,7 @@ private fun LibraryDownloadProgressDialog(progress: LibraryDownloadProgress) {
                 Text(progress.title)
                 if (progressFraction != null) {
                     LinearProgressIndicator(
-                        progress = progressFraction,
+                        progress = { progressFraction },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text("${humanReadableBytes(progress.bytesRead)} / ${humanReadableBytes(totalBytes)}")
@@ -3425,15 +3653,24 @@ private fun LibraryMediaInfoDialog(
 }
 
 
+private fun loadBitmapFromUrls(urls: List<String>): android.graphics.Bitmap? {
+    urls.forEach { candidate ->
+        val bitmap = loadBitmapFromUrl(candidate)
+        if (bitmap != null) return bitmap
+    }
+    return null
+}
+
 private fun loadBitmapFromUrl(url: String): android.graphics.Bitmap? {
     return try {
         val request = okhttp3.Request.Builder().url(url).header("User-Agent", "XIRO-Lite-Beta").build()
         okhttp3.OkHttpClient.Builder()
-            .connectTimeout(2, java.util.concurrent.TimeUnit.SECONDS)
-            .readTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
             .build()
             .newCall(request)
             .execute().use { response ->
+                if (!response.isSuccessful) return null
                 val bytes = response.body?.bytes() ?: return null
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
@@ -3502,7 +3739,10 @@ private fun buildRemoteLibraryMediaInfo(item: CameraMediaItem): LibraryMediaInfo
     val headerInfo = readRemoteFileHeaders(item.downloadUrl)
     val capturedText = headerInfo.second?.let(::formatLibraryTimestamp) ?: "Unknown"
     return if (item.kind == MediaKind.PHOTO) {
-        val bounds = decodeRemoteImageBounds(item.previewUrl ?: item.downloadUrl)
+        val bounds = item.previewUrls.asSequence()
+            .mapNotNull(::decodeRemoteImageBounds)
+            .firstOrNull()
+            ?: decodeRemoteImageBounds(item.previewUrl ?: item.downloadUrl)
         LibraryMediaInfo(
             fileName = item.name,
             sizeText = humanReadableBytes(headerInfo.first),
@@ -3755,7 +3995,3 @@ private fun DebugCommandRunnerCard(
         }
     }
 }
-
-
-
-

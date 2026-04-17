@@ -1,32 +1,39 @@
 package com.example.xirolite
 
 import com.example.xirolite.data.CommandResult
+import kotlin.math.absoluteValue
+import kotlin.math.roundToInt
 
 object BetaInference {
     private const val LOW_POWER_WARNING_THRESHOLD = 20
     private const val CRITICAL_POWER_WARNING_THRESHOLD = 10
     private const val STABLE_NO_GPS_SAMPLE_COUNT = 3
+    private const val SD_CARD_PENDING_TEXT = "Pending camera decode"
+    private const val FOV_PENDING_TEXT = "Pending camera callback"
 
     fun buildUiState(
-        host: String,
         networkInfo: DroneNetworkInfo,
         telemetryResults: List<TelemetryResult>,
         watch3014Summary: Telemetry3014Summary?,
         recentRemotePackets: List<RemoteTelemetryPacket>,
+        derivedFlightTelemetry: DerivedFlightTelemetry,
         relayProbeResults: List<CommandResult>,
         flightLogStatusText: String
     ): BetaUiState {
         val latestRemotePacket = recentRemotePackets.firstOrNull()
         val candidateFields = buildCandidates(latestRemotePacket, watch3014Summary)
+        val relayState = buildRelayState(relayProbeResults)
         val droneState = buildDroneState(
             watch3014Summary = watch3014Summary,
             recentRemotePackets = recentRemotePackets,
             latestRemotePacket = latestRemotePacket,
             telemetryResults = telemetryResults,
+            networkInfo = networkInfo,
+            relayState = relayState,
+            derivedFlightTelemetry = derivedFlightTelemetry,
             flightLogStatusText = flightLogStatusText
         )
-        val relayState = buildRelayState(relayProbeResults)
-        val preflight = buildPreflight(host, networkInfo, telemetryResults, latestRemotePacket, relayState, droneState)
+        val preflight = buildPreflight(networkInfo, telemetryResults, latestRemotePacket, droneState)
         val warnings = buildFlightWarnings(recentRemotePackets)
         return BetaUiState(
             droneState = droneState,
@@ -79,6 +86,9 @@ object BetaInference {
         recentRemotePackets: List<RemoteTelemetryPacket>,
         latestRemotePacket: RemoteTelemetryPacket?,
         telemetryResults: List<TelemetryResult>,
+        networkInfo: DroneNetworkInfo,
+        relayState: RelayStateUi,
+        derivedFlightTelemetry: DerivedFlightTelemetry,
         flightLogStatusText: String
     ): DroneStateUi {
         val packet = latestRemotePacket
@@ -109,12 +119,20 @@ object BetaInference {
             else -> packet?.stateGuess?.label ?: "Unknown"
         }
 
-        val heightText = "--"
-        val speedText = "--"
-        val distanceText = "--"
+        val heightText = derivedFlightTelemetry.altitudeMeters?.let(::formatAltitudeText) ?: "--"
+        val speedText = derivedFlightTelemetry.speedMetersPerSecond?.let(::formatSpeedText) ?: "--"
+        val distanceText = derivedFlightTelemetry.distanceFromHomeMeters?.let(::formatDistanceText) ?: "--"
 
         val cameraReady = telemetryResults.any { it.label == "CMD 3009" && it.status.startsWith("HTTP 200") }
-        val sdCardText = if (cameraReady) "Camera reachable" else "Unknown"
+        val sdCardSummary = telemetryResults.firstOrNull { it.label == "CMD 3014" }?.preview?.let { 
+            TelemetryProbe().parse3014Summary(it)
+        }
+        val sdCardText = when {
+            sdCardSummary?.value(3015) != null -> "${sdCardSummary.value(3015)} MB"
+            cameraReady -> SD_CARD_PENDING_TEXT
+            else -> "Unknown"
+        }
+        val fovText = if (cameraReady) FOV_PENDING_TEXT else "--"
 
         return DroneStateUi(
             heightText = heightText,
@@ -125,22 +143,20 @@ object BetaInference {
             gpsText = gpsText,
             flightModeText = flightModeText,
             droneBatteryText = LegacyTelemetryHints.droneBatteryHudText(packet),
-            relaySignalText = packet?.watchedOffsets?.firstOrNull { it.index == 41 }?.unsigned?.toString() ?: "--",
+            relaySignalText = buildWifiTelemetryText(networkInfo, relayState),
             sdCardText = sdCardText,
             remoteBatteryText = LegacyTelemetryHints.remoteBatteryHudText(packet),
             gearText = legacySnapshot?.gearSelection?.toString() ?: "--",
             flightLogText = flightLogStatusText,
-            fovText = "RTSP",
+            fovText = fovText,
             summary = LegacyTelemetryHints.hudSummaryText(packet, flightLogStatusText)
         )
     }
 
     private fun buildPreflight(
-        host: String,
         networkInfo: DroneNetworkInfo,
         telemetryResults: List<TelemetryResult>,
         latestRemotePacket: RemoteTelemetryPacket?,
-        relayState: RelayStateUi,
         droneState: DroneStateUi
     ): List<PreflightItem> {
         val onXiroWifi = networkInfo.localIp?.startsWith("192.168.2.") == true ||
@@ -167,8 +183,8 @@ object BetaInference {
             ),
             PreflightItem(
                 label = "Wi-Fi Signal",
-                value = networkInfo.wifiSignalText,
-                ok = networkInfo.wifiSignalText != "Unknown"
+                value = droneState.relaySignalText,
+                ok = droneState.relaySignalText != "--" && droneState.relaySignalText != "Unknown"
             ),
             PreflightItem(
                 label = "Flight Mode",
@@ -179,6 +195,16 @@ object BetaInference {
                 label = "Gear",
                 value = droneState.gearText,
                 ok = droneState.gearText != "--"
+            ),
+            PreflightItem(
+                label = "Altitude",
+                value = droneState.heightText,
+                ok = true
+            ),
+            PreflightItem(
+                label = "SD Card",
+                value = droneState.sdCardText,
+                ok = droneState.sdCardText != "Unknown" && droneState.sdCardText != "Reading..."
             )
         )
     }
@@ -227,9 +253,51 @@ object BetaInference {
                     ?.firstOrNull { !relayFieldLooksUnknown(it) }
                     ?.take(40)
                 ?: "--",
+            currentAirSignal = parsedCurrentAir
+                ?.signal
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.take(16)
+                ?: "--",
             availableNetworks = RelayPayloadParser.parseWifiCandidates(wifiResult?.preview.orEmpty()),
             lastProbeText = relayProbeResults.firstOrNull()?.status ?: "No relay probe yet"
         )
+    }
+
+    private fun buildWifiTelemetryText(
+        networkInfo: DroneNetworkInfo,
+        relayState: RelayStateUi
+    ): String {
+        val onExtender = networkInfo.localIp?.startsWith("192.168.2.") == true
+        val onCameraDirect = networkInfo.localIp?.startsWith("192.168.1.") == true
+        val relaySignal = relayState.currentAirSignal.takeIf { it != "--" }
+
+        return when {
+            onExtender && relaySignal != null -> "Link $relaySignal"
+            onExtender -> "Waiting for relay link"
+            onCameraDirect -> "N/A direct camera"
+            else -> "--"
+        }
+    }
+
+    private fun formatAltitudeText(altitudeMeters: Double): String {
+        return if (altitudeMeters.absoluteValue >= 1000.0) {
+            "${"%.2f".format(altitudeMeters / 1000.0)} km"
+        } else {
+            "${altitudeMeters.roundToInt()} m"
+        }
+    }
+
+    private fun formatSpeedText(speedMetersPerSecond: Double): String {
+        return "${"%.1f".format(speedMetersPerSecond)} m/s"
+    }
+
+    private fun formatDistanceText(distanceMeters: Double): String {
+        return if (distanceMeters >= 1000.0) {
+            "${"%.2f".format(distanceMeters / 1000.0)} km"
+        } else {
+            "${distanceMeters.roundToInt()} m"
+        }
     }
 
     private fun isSelectableWifiRow(line: String): Boolean {

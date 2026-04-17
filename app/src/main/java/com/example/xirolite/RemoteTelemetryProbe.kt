@@ -3,6 +3,8 @@ package com.example.xirolite
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
@@ -57,6 +59,15 @@ data class RemoteTelemetryPacket(
         val lo = rawData[startIndex].toInt() and 0xFF
         val hi = rawData[startIndex + 1].toInt() and 0xFF
         return lo or (hi shl 8)
+    }
+
+    fun rawF32le(startIndex: Int): Float? {
+        if (startIndex < 0 || startIndex + 3 >= rawData.size) return null
+        return runCatching {
+            ByteBuffer.wrap(rawData, startIndex, 4)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .float
+        }.getOrNull()
     }
 
     fun rawSlice(startIndex: Int, endExclusive: Int): ByteArray? {

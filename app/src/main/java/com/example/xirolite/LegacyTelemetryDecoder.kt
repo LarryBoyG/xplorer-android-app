@@ -11,15 +11,20 @@ data class LegacyTelemetrySnapshot(
     val gpsText: String?,
     val gearSelection: Int?,
     val switchControlState: Int?,
+    val position: FlightCoordinate?,
+    val altitudeMeters: Double?,
     val hjCompatible: Boolean
 )
 
 object LegacyTelemetryDecoder {
+    private const val RAW_LATITUDE_F32_OFFSET = 3
+    private const val RAW_LONGITUDE_F32_OFFSET = 7
     private const val RAW_SATELLITE_OFFSET = 23
     private const val RAW_POWER_U16_OFFSET = 51
     private const val RAW_VOLTAGE_U16_OFFSET = 69
     private const val RAW_GEAR_CANDIDATE_OFFSET = 54
     private const val RAW_SWITCH_CONTROL_OFFSET = 59
+    private const val RAW_ALTITUDE_U16_OFFSET = 33
     private const val GEAR_WINDOW_SIZE = 12
 
     fun decode(packet: RemoteTelemetryPacket?): LegacyTelemetrySnapshot? =
@@ -33,6 +38,8 @@ object LegacyTelemetryDecoder {
         val droneVoltage = latestPacket.rawU16le(RAW_VOLTAGE_U16_OFFSET)?.div(204.8)
         val switchControlState = latestPacket.rawUnsigned(RAW_SWITCH_CONTROL_OFFSET)
         val gearSelection = deriveGearSelection(packets)
+        val position = decodePosition(latestPacket)
+        val altitude = latestPacket.rawU16le(RAW_ALTITUDE_U16_OFFSET)?.div(10.0)
 
         val flightModeText = when {
             satellites == null -> null
@@ -55,8 +62,24 @@ object LegacyTelemetryDecoder {
             gpsText = gpsText,
             gearSelection = gearSelection,
             switchControlState = switchControlState,
+            position = position,
+            altitudeMeters = altitude,
             hjCompatible = latestPacket.rawData.size >= 98
         )
+    }
+
+    fun decodePosition(packet: RemoteTelemetryPacket?): FlightCoordinate? {
+        packet ?: return null
+
+        val latitude = packet.rawF32le(RAW_LATITUDE_F32_OFFSET)?.toDouble() ?: return null
+        val longitude = packet.rawF32le(RAW_LONGITUDE_F32_OFFSET)?.toDouble() ?: return null
+
+        if (!latitude.isFinite() || !longitude.isFinite()) return null
+        if (latitude !in -90.0..90.0) return null
+        if (longitude !in -180.0..180.0) return null
+        if (latitude == 0.0 && longitude == 0.0) return null
+
+        return FlightCoordinate(latitude = latitude, longitude = longitude)
     }
 
     private fun deriveGearSelection(packets: List<RemoteTelemetryPacket>): Int? {
