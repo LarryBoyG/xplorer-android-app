@@ -12,8 +12,10 @@ import android.provider.Settings
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -35,11 +37,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,23 +56,20 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -95,10 +96,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Collections
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -110,7 +113,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -140,6 +147,7 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,26 +157,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            val xiroGreen = Color(0xFF6BD224)
-            val xiroBackground = Color(0xFF2B2F39)
-            val xiroSurface = Color(0xFF3A3F4A)
-            val xiroNavBar = Color(0xFF252A31)
-            val xiroOnNavBar = Color(0xFFE9EDF2)
-            val scheme = darkColorScheme(
-                primary = xiroGreen,
-                secondary = xiroGreen,
-                tertiary = xiroGreen,
-                background = xiroBackground,
-                surface = xiroSurface,
-                surfaceVariant = xiroNavBar,
-                onPrimary = Color.Black,
-                onSecondary = Color.Black,
-                onTertiary = Color.Black,
-                onBackground = Color(0xFFF2F4F7),
-                onSurface = Color(0xFFF2F4F7),
-                onSurfaceVariant = xiroOnNavBar
-            )
-            MaterialTheme(colorScheme = scheme) {
+            MaterialTheme(colorScheme = xiroColorScheme()) {
                 XiroLiteBetaApp()
             }
         }
@@ -205,7 +194,11 @@ private enum class SettingsPage {
     ROOT,
     EXTENDER_NAME,
     EXTENDER_PASSWORD,
+    UNITS,
+    OFFLINE_MAPS,
     BIND_CAMERA,
+    PAST_FLIGHTS,
+    ABOUT,
     RELEASE_NOTES,
     DEBUG
 }
@@ -215,6 +208,39 @@ private data class ReleaseNotes(
     val changes: List<String>,
     val knownIssues: List<String>
 )
+
+private data class AboutInfo(
+    val appName: String,
+    val version: String,
+    val build: String,
+    val status: String,
+    val summary: String,
+    val preservationText: String,
+    val compatibilityNote: String,
+    val affiliationNote: String,
+    val projectSummary: String,
+    val projectPageUrl: String,
+    val issueTrackerUrl: String,
+    val mapAttribution: String,
+    val mapEngineAttribution: String,
+    val licenseSummary: String,
+    val proprietaryNotice: String,
+    val communityThanks: String
+)
+
+private fun currentDisclaimerText(): String = """
+    This application is not an official XIRO or XIRO Xplorer application. It is an independent, open source, third-party compatibility project intended for use with certain XIRO Xplorer drone hardware.
+
+    This project is not affiliated with, endorsed by, sponsored by, or supported by XIRO, ZeroTech, or any related vendor, manufacturer, or affiliate. All trademarks, product names, drone names, software names, and related branding belong to their respective owners.
+
+    This application is experimental and is provided for research, preservation, interoperability, and compatibility purposes only. Because this software interacts with drone hardware, camera systems, telemetry, network connections, and related device functions, improper behavior or software bugs could potentially affect drone operation.
+
+    Use of this application is entirely at your own risk. Flying or operating a drone with this software may result in unexpected behavior, loss of control, hardware damage, data loss, personal injury, property damage, or violation of local laws or regulations.
+
+    By using this application, you acknowledge and agree that you assume all risks associated with its use. The developers and contributors of this project accept no responsibility or liability for any damage, loss, injury, legal issue, or other consequence resulting from use or misuse of this software.
+
+    Always follow local laws, aviation regulations, safety guidelines, and responsible operating practices.
+""".trimIndent()
 
 private data class LibraryDownloadProgress(
     val title: String,
@@ -233,12 +259,36 @@ private data class LibraryMediaInfo(
 private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     version = BuildConfig.VERSION_NAME,
     changes = listOf(
-        "Altitude (Height) is now decoded from the UDP telemetry stream (u16 @ offset 33 / 10.0), matching HJ-compatible drone logs.",
+        "The launcher icon now correctly uses the mountain-and-radar XIRO Lite artwork, replacing the accidentally wired placeholder icon from the previous build attempt.",
+        "XIRO Lite now shows a mandatory launch disclaimer on every startup, and users must explicitly agree before continuing to use the app.",
+        "The launch disclaimer cannot be dismissed accidentally by tapping outside or pressing back, and it now offers a clear exit path for users who do not want to continue.",
+        "The startup flow now waits until the disclaimer is accepted before showing What's New, keeping launch messaging clearer and more deliberate.",
+        "The XIRO Lite header tagline now reads ReDiscover Your Sky, with the Re highlighted in XIRO green for a cleaner preservation-project identity.",
+        "Live View warning banners now appear at the bottom of the screen, leaving the top edge cleaner for telemetry chips and reducing feed obstruction.",
+        "The customizable Live View HUD now stays on a single row: chips compact themselves automatically and fall back to horizontal scrolling instead of wrapping onto a second line.",
+        "Offline maps now include a clear legend for Drone, You, and Home so the colored markers are easier to understand in both Live View and replay-map use.",
+        "XIRO Lite now shows an over-height warning when live Elevation exceeds the validated legal-height threshold, with the warning text automatically matching metric or imperial units.",
+        "Target Elevation now uses stricter sanity filtering so bogus target-height spikes are rejected before they can reach Telemetry or the HUD.",
+        "Taking a photo or starting/stopping video now keeps the last good frame visible while RTSP is interrupted, reducing the black-screen gap during camera commands.",
+        "Camera SD thumbnails are now cached into the XIRO Preview folder so reopening the Library tab does not have to re-fetch every remote preview over Wi-Fi.",
+        "Preview-cache entries no longer appear as fake local downloads: the Local tab is now HD-only and represents only media that has actually been saved into XIRO HD storage.",
+        "Remote preview caching now tags photo and video thumbnails separately so video preview images can still be identified correctly without creating duplicate Local entries.",
+        "The extender password wording now clearly refers to the Wi-Fi extender password, and the root Settings page no longer shows the confusing Blank value or echoes the typed password back after editing.",
+        "Live View now uses the PHOTO / VIDEO selector itself as the mode toggle, removing the old separate switch button and freeing up space on the right-side control rail.",
+        "A new gear menu in Live View now holds the stream profile selection, creating a cleaner home for future camera controls like ISO and brightness.",
+        "The live-view map inset is smaller, its attribution badge is less intrusive, and the inset tap-to-swap behavior is more reliable.",
+        "The HJ replay player now includes an offline map card that can draw the saved breadcrumb route, current replay point, and recovered home point using imported mapsforge regions.",
+        "Camera SD media now uses the same width-aware preview grid logic as local media, and remote videos now try best-effort thumbnails before falling back to plain placeholders.",
+        "Elevation decoding now treats the recovered height fields as signed values and keeps the last sane reading, preventing the old 6000 m spike bug in Live View.",
+        "The app now uses a more polished skeuomorphic design system with raised dark surfaces, white primary text, and green accent states across the main shell.",
+        "Settings dialogs, library overlays, download/info popups, and the HJ past-flight replay viewer now follow the same 3D visual language instead of mixing flat Material cards with the newer style.",
+        "Live View now shares the updated design treatment as well, while the bottom navigation bar and sliding tab/page animations remain intact.",
+        "Telemetry now exposes separate Elevation and Target Elevation fields based on the HJ-validated height decode work, instead of forcing a single generic altitude label.",
         "SD Card Remaining storage now attempts to parse from the camera's CMD 3014 summary (ID 3015), showing available space in MB when connected.",
         "Telemetry now decodes live GPS coordinates from the HJ-compatible UDP packet layout, matching the same latitude/longitude positions previously validated through XIRO Assistant log playback.",
         "The Telemetry page now derives live speed and distance from the packet stream instead of leaving those fields blank, so motion becomes visible as soon as GPS coordinates begin changing in flight.",
         "Wi-Fi telemetry now reflects only the relay-to-camera signal reported by the extender, so the Telemetry page no longer mixes in the phone's own Wi-Fi strength.",
-        "Top-bar telemetry labels are now cleaner and more honest: Height is shown as Altitude, Relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.",
+        "Top-bar telemetry labels are now cleaner and more honest: relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.",
         "Wi-Fi telemetry now renders with traditional signal-strength bars so the extender-to-camera link is easier to read at a glance.",
         "Preflight status rows now include live-view HUD toggles, so selected telemetry items can be added or removed from the live-view overlay without changing code.",
         "GPS Sat, Aircraft Power, and Flight Mode now use richer status colors in both the Preflight card and the live-view HUD, matching the requested red / yellow / green thresholds.",
@@ -248,7 +298,16 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Remote camera photos now try legacy-style preview candidates before download, and the main navigation now slides both the page content and the selected tab highlight.",
         "Exiting Live View while a video recording is active now sends a stop-video command first, matching the legacy app more closely and reducing the chance of half-finished video files.",
         "Live View now uses a camera-style shutter control: photo mode gets a white dual-ring capture button with press feedback, and video mode gets a red record button with a live elapsed timer while recording.",
-        "Camera SD library parsing now strips query-style suffixes like ?del=1 before treating entries as real media, reducing ghost duplicates and unsafe remote-media handling."
+        "Camera SD library parsing now strips query-style suffixes like ?del=1 before treating entries as real media, reducing ghost duplicates and unsafe remote-media handling.",
+        "Settings now include an app-wide units toggle, so Telemetry, Live View, and HJ flight-log replay can switch cleanly between metric and imperial distance/speed readouts.",
+        "Settings subpages now use simpler left-arrow navigation, Past Flights auto-populates from the XIRO hj folder without extra refresh clutter, and the replay player was simplified to a cleaner single-control layout.",
+        "The camera home screen icon now centers more reliably across device sizes, and Live View uses cleaner non-debug capture text plus a stronger shutter / record sound path.",
+        "The Camera tab hero now sits truly centered in the available pane, and the Live View right-side controls, mode selector, and warning banners no longer stretch awkwardly across the screen.",
+        "The Library tab now hides low-level Camera SD command diagnostics in normal use, so empty-card and disconnected states stay cleaner unless Debug Mode is enabled.",
+        "Local Library tiles now size from the available card width instead of using a rigid thumbnail size, giving the grid a more symmetrical layout with less dead space on the right.",
+        "Live View HUD selections now preserve older saved Altitude and Baro HGT layouts by automatically migrating them to the new Elevation field.",
+        "Live View now supports a legacy-style offline map swap: a small bottom-left map inset can be tapped to expand full-screen, while the live video becomes the preview inset so you can swap back instantly.",
+        "Settings now include an Offline Maps page for importing local .map regions, picking the active region, and opening the official mapsforge download source, with visible OpenStreetMap contributor attribution."
     ),
     knownIssues = listOf(
         "FOV in the legacy app appears to be a camera-side field-of-view or digital zoom callback, not core flight telemetry, so XIRO Lite is leaving it pending until the camera-side query is mapped.",
@@ -270,6 +329,33 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     )
 )
 
+private fun currentAboutInfo(): AboutInfo {
+    val versionName = BuildConfig.VERSION_NAME
+    val status = when {
+        versionName.contains("alpha", ignoreCase = true) -> "Experimental Alpha"
+        versionName.contains("beta", ignoreCase = true) -> "Experimental Beta"
+        else -> "Experimental"
+    }
+    return AboutInfo(
+        appName = "Xplorer Android App",
+        version = versionName,
+        build = BuildConfig.VERSION_CODE.toString(),
+        status = status,
+        summary = "Unofficial community project for XIRO Xplorer compatibility.",
+        preservationText = "This app is part of an open source preservation effort focused on helping keep legacy XIRO drone hardware usable through clean-room development, protocol research, and compatible tooling.",
+        compatibilityNote = "Features and behavior may vary depending on drone model, camera firmware, range extender state, and connection method.",
+        affiliationNote = "Not affiliated with or endorsed by XIRO, ZEROTECH or any original vendor entity.",
+        projectSummary = "Open source Android app development for XIRO Xplorer compatibility, telemetry research, camera protocol testing, and continued legacy hardware support.",
+        projectPageUrl = "https://github.com/LarryBoyG/xplorer-android-app",
+        issueTrackerUrl = "https://github.com/LarryBoyG/xplorer-android-app/issues",
+        mapAttribution = OfflineMapManager.MAP_ATTRIBUTION,
+        mapEngineAttribution = OfflineMapManager.MAP_ENGINE_ATTRIBUTION,
+        licenseSummary = "This app and its original project code are licensed under the Apache License 2.0.",
+        proprietaryNotice = "This project does not claim ownership of proprietary third-party software, firmware, trademarks, logos, or copyrighted assets.",
+        communityThanks = "Thanks to the community of legacy XIRO owners, testers, reverse engineers, and open source contributors helping document and preserve platform functionality."
+    )
+}
+
 @Composable
 private fun XiroBottomNavigationBar(
     selectedTab: BetaTab,
@@ -277,55 +363,63 @@ private fun XiroBottomNavigationBar(
 ) {
     val tabs = BetaTab.values()
     NavigationBar(
-        containerColor = Color(0xFF252A31),
+        containerColor = Color.Transparent,
         tonalElevation = 0.dp,
         windowInsets = WindowInsets.navigationBars
     ) {
-        BoxWithConstraints(
+        XiroRaisedCard(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-                .height(62.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            shape = RoundedCornerShape(28.dp),
+            containerColor = XiroDesignTokens.SurfaceInset
         ) {
-            val itemWidth = maxWidth / tabs.size
-            val indicatorOffset by animateDpAsState(
-                targetValue = itemWidth * tabs.indexOf(selectedTab),
-                label = "nav_indicator_offset"
-            )
-
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
-                    .offset(x = indicatorOffset)
-                    .width(itemWidth)
-                    .fillMaxHeight()
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Color(0xFF313844))
-            )
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .height(62.dp)
+            ) {
+                val itemWidth = maxWidth / tabs.size
+                val indicatorOffset by animateDpAsState(
+                    targetValue = itemWidth * tabs.indexOf(selectedTab),
+                    label = "nav_indicator_offset"
+                )
 
-            Row(modifier = Modifier.fillMaxSize()) {
-                tabs.forEach { tab ->
-                    val selected = tab == selectedTab
-                    val contentColor by animateColorAsState(
-                        targetValue = if (selected) Color(0xFF6BD224) else Color(0xFFBDC4CF),
-                        label = "nav_content_color"
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(22.dp))
-                            .clickable { onSelect(tab) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        when (tab) {
-                            BetaTab.CAMERA -> Icon(Icons.Outlined.CameraAlt, contentDescription = tab.title, tint = contentColor)
-                            BetaTab.TELEMETRY -> Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = tab.title, tint = contentColor)
-                            BetaTab.LIBRARY -> Icon(Icons.Outlined.Collections, contentDescription = tab.title, tint = contentColor)
-                            BetaTab.SETTINGS -> Icon(Icons.Outlined.Settings, contentDescription = tab.title, tint = contentColor)
+                XiroPillSurface(
+                    modifier = Modifier
+                        .offset(x = indicatorOffset)
+                        .width(itemWidth)
+                        .fillMaxHeight()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(22.dp),
+                    containerColor = XiroDesignTokens.Surface
+                ) {}
+
+                Row(modifier = Modifier.fillMaxSize()) {
+                    tabs.forEach { tab ->
+                        val selected = tab == selectedTab
+                        val contentColor by animateColorAsState(
+                            targetValue = if (selected) XiroDesignTokens.AccentBright else XiroDesignTokens.TextMuted,
+                            label = "nav_content_color"
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(22.dp))
+                                .clickable { onSelect(tab) },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            when (tab) {
+                                BetaTab.CAMERA -> Icon(Icons.Outlined.CameraAlt, contentDescription = tab.title, tint = contentColor)
+                                BetaTab.TELEMETRY -> Icon(Icons.AutoMirrored.Outlined.ShowChart, contentDescription = tab.title, tint = contentColor)
+                                BetaTab.LIBRARY -> Icon(Icons.Outlined.Collections, contentDescription = tab.title, tint = contentColor)
+                                BetaTab.SETTINGS -> Icon(Icons.Outlined.Settings, contentDescription = tab.title, tint = contentColor)
+                            }
+                            Text(tab.title, color = contentColor, style = MaterialTheme.typography.labelSmall)
                         }
-                        Text(tab.title, color = contentColor, style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
@@ -361,6 +455,7 @@ private fun XiroLiteBetaApp() {
     var selectedProfile by remember { mutableStateOf(LegacyCompatibilityCatalog.defaultProfile) }
     val repo = remember { XiroRepository() }
     val context = LocalContext.current
+    val activity = context as? android.app.Activity
     val scope = rememberCoroutineScope()
 
     val detector = remember { DroneNetworkDetector(context) }
@@ -377,6 +472,7 @@ private fun XiroLiteBetaApp() {
     val cameraMediaController = remember(selectedProfile) { CameraMediaController(selectedProfile) }
     val captureFeedback = remember { CaptureFeedback(context) }
     val localLibraryManager = remember { LocalLibraryManager(context) }
+    val offlineMapManager = remember { OfflineMapManager(context, localLibraryManager) }
     val hjLogRecorder = remember { HjLogRecorder(localLibraryManager) }
 
     var host by remember { mutableStateOf(selectedProfile.primaryHost()) }
@@ -405,10 +501,16 @@ private fun XiroLiteBetaApp() {
     var runningCommandPath by remember { mutableStateOf<String?>(null) }
     var selectedLibraryPreview by remember { mutableStateOf<LocalLibraryItem?>(null) }
     var selectedRemoteLibraryPreview by remember { mutableStateOf<CameraMediaItem?>(null) }
+    var selectedPastFlightSummary by remember { mutableStateOf<HjFlightSummary?>(null) }
     var libraryViewMode by remember { mutableStateOf(LibraryViewMode.REMOTE_CAMERA) }
     var libraryRefreshing by remember { mutableStateOf(false) }
     var lastLibraryRefreshAtMs by remember { mutableLongStateOf(0L) }
     var libraryDownloadProgress by remember { mutableStateOf<LibraryDownloadProgress?>(null) }
+    var pastFlightSummaries by remember { mutableStateOf(listOf<HjFlightSummary>()) }
+    var pastFlightsLoading by remember { mutableStateOf(false) }
+    var lastPastFlightsRefreshAtMs by remember { mutableLongStateOf(0L) }
+    var installedOfflineMaps by remember { mutableStateOf(offlineMapManager.listInstalledMaps()) }
+    var offlineMapStatus by remember { mutableStateOf("") }
     var showPlayer by remember { mutableStateOf(false) }
     var fullScreenPlayer by remember { mutableStateOf(false) }
     var showHud by remember { mutableStateOf(true) }
@@ -437,22 +539,28 @@ private fun XiroLiteBetaApp() {
     var relayBindPassword by remember { mutableStateOf("") }
     var settingsPage by remember { mutableStateOf(SettingsPage.ROOT) }
     var extenderName by remember { mutableStateOf("XPLORER_4009A8") }
-    var extenderPassword by remember { mutableStateOf("Blank") }
+    var extenderPassword by remember { mutableStateOf("") }
     var selectedBindNetwork by remember { mutableStateOf<String?>(null) }
     var pendingBindNetwork by remember { mutableStateOf<RelayWifiCandidate?>(null) }
     var relayBindInProgress by remember { mutableStateOf(false) }
     val releaseNotes = remember { currentReleaseNotes() }
     val releasePrefs = remember { context.getSharedPreferences("xiro_lite_release_notes", android.content.Context.MODE_PRIVATE) }
-    val uiPrefs = remember { context.getSharedPreferences("xiro_lite_ui", android.content.Context.MODE_PRIVATE) }
+    val uiPrefs = remember { context.getSharedPreferences(UI_PREFS_NAME, android.content.Context.MODE_PRIVATE) }
     var debugModeEnabled by remember { mutableStateOf(uiPrefs.getBoolean("debug_mode_enabled", false)) }
+    var measurementUnit by remember {
+        mutableStateOf(MeasurementUnit.fromStored(uiPrefs.getString(MEASUREMENT_UNIT_PREF_KEY, null)))
+    }
     var selectedLiveHudItems by remember {
         mutableStateOf(
-            uiPrefs.getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
-                ?.toSet()
-                ?: DEFAULT_LIVE_VIEW_HUD_ITEMS
+            normalizeHudSelection(
+                uiPrefs.getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
+                    ?.toSet()
+                    ?: DEFAULT_LIVE_VIEW_HUD_ITEMS
+            )
         )
     }
     var showDebugModeWarningDialog by remember { mutableStateOf(false) }
+    var showDisclaimerDialog by remember { mutableStateOf(true) }
     var showReleaseNotesDialog by remember {
         mutableStateOf(
             releasePrefs.getString("last_ack_version", null) != releaseNotes.version
@@ -484,12 +592,18 @@ private fun XiroLiteBetaApp() {
         recentRemotePackets = remotePackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
         relayProbeResults = relayProbeResults,
-        flightLogStatusText = hjLogStatusText
+        flightLogStatusText = hjLogStatusText,
+        measurementUnit = measurementUnit
     )
 
     LaunchedEffect(Unit) {
-        localLibraryManager.ensureFolders()
+        val folders = localLibraryManager.ensureFolders()
         localLibraryItems = localLibraryManager.scanLocalItems(cameraLibrary.items)
+        pastFlightSummaries = withContext(Dispatchers.IO) {
+            HjFlightLogParser.scanFlightSummaries(folders.metadata)
+        }
+        installedOfflineMaps = offlineMapManager.listInstalledMaps()
+        lastPastFlightsRefreshAtMs = System.currentTimeMillis()
     }
 
     LaunchedEffect(networkInfo.localIp, networkInfo.gatewayIp) {
@@ -504,6 +618,25 @@ private fun XiroLiteBetaApp() {
     fun appendLog(message: String) {
         liveLogs.add("${formatTimestamp(System.currentTimeMillis())}  $message")
         if (liveLogs.size > 300) liveLogs.removeAt(0)
+    }
+
+    val importOfflineMapLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            offlineMapStatus = "Importing ${uri.lastPathSegment ?: "offline map"}..."
+            offlineMapManager.importMap(uri)
+                .onSuccess { imported ->
+                    installedOfflineMaps = offlineMapManager.listInstalledMaps()
+                    offlineMapStatus = "Imported ${imported.fileName}"
+                    appendLog("Offline map imported: ${imported.file.absolutePath}")
+                }
+                .onFailure { error ->
+                    offlineMapStatus = "Map import failed: ${error.message}"
+                    appendLog(offlineMapStatus)
+                }
+        }
     }
 
     fun isOnXiroWifi(): Boolean =
@@ -583,8 +716,14 @@ private fun XiroLiteBetaApp() {
         appendLog("Debug mode ${if (enabled) "enabled" else "disabled"}")
     }
 
+    fun setMeasurementUnit(unit: MeasurementUnit) {
+        measurementUnit = unit
+        uiPrefs.edit().putString(MEASUREMENT_UNIT_PREF_KEY, unit.storedValue).apply()
+        appendLog("Units changed to ${unit.pageTitle}")
+    }
+
     fun setLiveHudSelection(label: String, enabled: Boolean) {
-        val updated = selectedLiveHudItems.toMutableSet().apply {
+        val updated = normalizeHudSelection(selectedLiveHudItems).toMutableSet().apply {
             if (enabled) add(label) else remove(label)
         }.toSet()
         selectedLiveHudItems = updated
@@ -609,6 +748,22 @@ private fun XiroLiteBetaApp() {
         }
     }
 
+    suspend fun refreshPastFlightSummaries(reason: String) {
+        pastFlightsLoading = true
+        try {
+            val summaries = withContext(Dispatchers.IO) {
+                HjFlightLogParser.scanFlightSummaries(localLibraryManager.ensureFolders().metadata)
+            }
+            pastFlightSummaries = summaries
+            lastPastFlightsRefreshAtMs = System.currentTimeMillis()
+            if (reason.isNotBlank()) {
+                appendLog("Past flights refreshed ($reason): ${summaries.size} HJ file(s)")
+            }
+        } finally {
+            pastFlightsLoading = false
+        }
+    }
+
     LaunchedEffect(selectedProfile.id) {
         host = selectedProfile.primaryHost()
         cameraLibrary = CameraLibraryState(emptyList(), emptyList())
@@ -623,6 +778,16 @@ private fun XiroLiteBetaApp() {
         if (libraryRefreshing) return@LaunchedEffect
         if (now - lastLibraryRefreshAtMs < 2_500L) return@LaunchedEffect
         performLibraryRefresh("library tab opened")
+    }
+
+    LaunchedEffect(selectedTab, settingsPage) {
+        if (selectedTab != BetaTab.SETTINGS) return@LaunchedEffect
+        if (settingsPage != SettingsPage.PAST_FLIGHTS && settingsPage != SettingsPage.ROOT) return@LaunchedEffect
+        val now = System.currentTimeMillis()
+        if (pastFlightsLoading) return@LaunchedEffect
+        val minRefreshGapMs = if (settingsPage == SettingsPage.PAST_FLIGHTS) 2_500L else 10_000L
+        if (now - lastPastFlightsRefreshAtMs < minRefreshGapMs) return@LaunchedEffect
+        refreshPastFlightSummaries(if (settingsPage == SettingsPage.PAST_FLIGHTS) "past flights opened" else "settings opened")
     }
 
     LaunchedEffect(selectedTab, settingsPage, extenderSettingsEnabled, relayHost) {
@@ -937,7 +1102,17 @@ private fun XiroLiteBetaApp() {
 
     FullScreenSystemBars(enabled = showPlayer)
 
-    if (showReleaseNotesDialog) {
+    if (showDisclaimerDialog) {
+        DisclaimerDialog(
+            disclaimerText = currentDisclaimerText(),
+            onAgree = { showDisclaimerDialog = false },
+            onExit = {
+                activity?.finishAffinity() ?: activity?.finish()
+            }
+        )
+    }
+
+    if (!showDisclaimerDialog && showReleaseNotesDialog) {
         ReleaseNotesDialog(
             notes = releaseNotes,
             onDismiss = {
@@ -1013,6 +1188,14 @@ private fun XiroLiteBetaApp() {
             onDownload = {
                 downloadRemoteLibraryItem(item, successMessagePrefix = "Downloaded HD copy")
             }
+        )
+    }
+
+    selectedPastFlightSummary?.let { summary ->
+        PastFlightReplayDialog(
+            summary = summary,
+            measurementUnit = measurementUnit,
+            onDismiss = { selectedPastFlightSummary = null }
         )
     }
 
@@ -1103,11 +1286,7 @@ private fun XiroLiteBetaApp() {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color(0xFF2E323D), Color(0xFF2A2E38), Color(0xFF262A34))
-                        )
-                    )
+                    .background(xiroMainBackgroundBrush())
             ) {
                 Scaffold(
                     containerColor = Color.Transparent,
@@ -1167,24 +1346,37 @@ private fun XiroLiteBetaApp() {
                             when (activeTab) {
                         BetaTab.CAMERA -> {
                             item {
-                                CameraHomeCard(
-                                    detectedDroneLabel = cameraHomeDroneLabel(selectedProfile),
-                                    onOpenCamera = {
-                                        appendLog("Launching dedicated camera viewer")
-                                        scope.launch {
-                                            appendLog("Running camera init before playback")
-                                            cameraInitResults = cameraInitProbe.run(host)
+                                Box(
+                                    modifier = if (debugModeEnabled) {
+                                        Modifier.fillMaxWidth()
+                                    } else {
+                                        Modifier
+                                            .fillParentMaxHeight()
+                                            .fillMaxWidth()
+                                    },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CameraHomeCard(
+                                        profile = selectedProfile,
+                                        connectionStatus = connectionStatus,
+                                        detectedDroneLabel = cameraHomeDroneLabel(selectedProfile),
+                                        onOpenCamera = {
+                                            appendLog("Launching dedicated camera viewer")
+                                            scope.launch {
+                                                appendLog("Running camera init before playback")
+                                                cameraInitResults = cameraInitProbe.run(host)
+                                            }
+                                            context.startActivity(Intent(context, CameraViewerActivity::class.java).apply {
+                                                putExtra(CameraViewerActivity.EXTRA_HOST, host)
+                                                putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
+                                                putStringArrayListExtra(
+                                                    CameraViewerActivity.EXTRA_HUD_ITEMS,
+                                                    ArrayList(selectedLiveHudItems)
+                                                )
+                                            })
                                         }
-                                        context.startActivity(Intent(context, CameraViewerActivity::class.java).apply {
-                                            putExtra(CameraViewerActivity.EXTRA_HOST, host)
-                                            putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
-                                            putStringArrayListExtra(
-                                                CameraViewerActivity.EXTRA_HUD_ITEMS,
-                                                ArrayList(selectedLiveHudItems)
-                                            )
-                                        })
-                                    }
-                                )
+                                    )
+                                }
                             }
                             if (debugModeEnabled) {
                                 item {
@@ -1260,8 +1452,16 @@ private fun XiroLiteBetaApp() {
                         }
 
                         BetaTab.SETTINGS -> {
-                            item {
-                                ConnectionStatusCard(connectionStatus = connectionStatus)
+                            if (
+                                settingsPage != SettingsPage.PAST_FLIGHTS &&
+                                settingsPage != SettingsPage.UNITS &&
+                                settingsPage != SettingsPage.OFFLINE_MAPS &&
+                                settingsPage != SettingsPage.RELEASE_NOTES &&
+                                settingsPage != SettingsPage.ABOUT
+                            ) {
+                                item {
+                                    ConnectionStatusCard(connectionStatus = connectionStatus)
+                                }
                             }
                             when (settingsPage) {
                                 SettingsPage.ROOT -> {
@@ -1269,11 +1469,13 @@ private fun XiroLiteBetaApp() {
                                         ExtenderSettingsMenuCard(
                                             enabled = extenderSettingsEnabled,
                                             extenderName = if (extenderSettingsEnabled) extenderName else "",
-                                            extenderPassword = if (extenderSettingsEnabled) extenderPassword else "",
+                                            extenderPassword = if (extenderSettingsEnabled) "Hidden" else "",
                                             currentBoundCamera = if (extenderSettingsEnabled) cleanRelayField(betaUiState.relayState.currentAirWifi) else "Not connected to XIRO extender",
                                             relayStatus = if (extenderSettingsEnabled) betaUiState.relayState.status else "Unavailable",
                                             onEditName = { if (extenderSettingsEnabled) settingsPage = SettingsPage.EXTENDER_NAME },
                                             onEditPassword = { if (extenderSettingsEnabled) settingsPage = SettingsPage.EXTENDER_PASSWORD },
+                                            measurementUnitLabel = measurementUnit.settingsValueLabel,
+                                            onOpenUnits = { settingsPage = SettingsPage.UNITS },
                                             debugModeEnabled = debugModeEnabled,
                                             onToggleDebugMode = {
                                                 if (debugModeEnabled) {
@@ -1287,17 +1489,35 @@ private fun XiroLiteBetaApp() {
                                                     settingsPage = SettingsPage.BIND_CAMERA
                                                 }
                                             },
-                                            onOpenReleaseNotes = { settingsPage = SettingsPage.RELEASE_NOTES },
                                             onOpenDebug = { if (debugModeEnabled) settingsPage = SettingsPage.DEBUG }
+                                        )
+                                    }
+                                    item {
+                                        OfflineMapsMenuCard(
+                                            activeMap = installedOfflineMaps.firstOrNull { it.isActive },
+                                            installedCount = installedOfflineMaps.size,
+                                            onOpen = { settingsPage = SettingsPage.OFFLINE_MAPS }
+                                        )
+                                    }
+                                    item {
+                                        PastFlightsMenuCard(
+                                            flightCount = pastFlightSummaries.size,
+                                            loading = pastFlightsLoading,
+                                            onOpen = { settingsPage = SettingsPage.PAST_FLIGHTS }
                                         )
                                     }
                                     if (debugModeEnabled) {
                                         item { CameraCaptureCard(lastAction = lastCameraAction) }
                                         item { CameraStepSequenceCard(lastAction = lastCameraAction) }
                                     }
-                                    item { CameraLibrarySummaryCard(cameraLibrary) }
                                     if (debugModeEnabled) {
                                         item { CameraTraceLogCard(cameraTraceLog) }
+                                    }
+                                    item {
+                                        SettingsFooterActionsCard(
+                                            onOpenAbout = { settingsPage = SettingsPage.ABOUT },
+                                            onOpenReleaseNotes = { settingsPage = SettingsPage.RELEASE_NOTES }
+                                        )
                                     }
                                 }
                                 SettingsPage.EXTENDER_NAME -> {
@@ -1328,8 +1548,60 @@ private fun XiroLiteBetaApp() {
                                                     val result = relayProbe.setRepeaterPassword(relayHost, extenderPassword)
                                                     relayProbeResults = listOf(result) + relayProbeResults
                                                     appendLog("Set repeater password attempted")
+                                                    extenderPassword = ""
                                                     settingsPage = SettingsPage.ROOT
                                                 }
+                                            }
+                                        )
+                                    }
+                                }
+                                SettingsPage.UNITS -> {
+                                    item {
+                                        InlineBackHeader(title = "Set units", onBack = { settingsPage = SettingsPage.ROOT })
+                                    }
+                                    item {
+                                        UnitsSettingsCard(
+                                            selectedUnit = measurementUnit,
+                                            onSelectUnit = ::setMeasurementUnit
+                                        )
+                                    }
+                                }
+                                SettingsPage.OFFLINE_MAPS -> {
+                                    item {
+                                        InlineBackHeader(title = "Offline Maps", onBack = { settingsPage = SettingsPage.ROOT })
+                                    }
+                                    item {
+                                        OfflineMapsSettingsCard(
+                                            installedMaps = installedOfflineMaps,
+                                            statusText = offlineMapStatus,
+                                            onOpenDownloads = {
+                                                context.startActivity(
+                                                    Intent(
+                                                        Intent.ACTION_VIEW,
+                                                        Uri.parse(OfflineMapManager.MAP_DOWNLOAD_URL)
+                                                    )
+                                                )
+                                            },
+                                            onImport = {
+                                                importOfflineMapLauncher.launch(arrayOf("*/*"))
+                                            },
+                                            onSelectActive = { fileName ->
+                                                offlineMapManager.setActiveMap(fileName)
+                                                installedOfflineMaps = offlineMapManager.listInstalledMaps()
+                                                offlineMapStatus = "Active map set to $fileName"
+                                                appendLog(offlineMapStatus)
+                                            },
+                                            onDelete = { fileName ->
+                                                offlineMapManager.deleteMap(fileName)
+                                                    .onSuccess {
+                                                        installedOfflineMaps = offlineMapManager.listInstalledMaps()
+                                                        offlineMapStatus = "Deleted $fileName"
+                                                        appendLog(offlineMapStatus)
+                                                    }
+                                                    .onFailure { error ->
+                                                        offlineMapStatus = "Delete failed: ${error.message}"
+                                                        appendLog(offlineMapStatus)
+                                                    }
                                             }
                                         )
                                     }
@@ -1384,6 +1656,23 @@ private fun XiroLiteBetaApp() {
                                                 }
                                             }
                                         )
+                                    }
+                                }
+                                SettingsPage.PAST_FLIGHTS -> {
+                                    item {
+                                        InlineBackHeader(title = "Past Flights", onBack = { settingsPage = SettingsPage.ROOT })
+                                    }
+                                    if (pastFlightsLoading && pastFlightSummaries.isEmpty()) {
+                                        item { PastFlightsEmptyStateCard(message = "Scanning saved HJ flight logs...") }
+                                    } else if (pastFlightSummaries.isEmpty()) {
+                                        item { PastFlightsEmptyStateCard(message = "No saved HJ flight logs found yet.") }
+                                    } else {
+                                        items(pastFlightSummaries) { summary ->
+                                            PastFlightEntryCard(
+                                                summary = summary,
+                                                onOpen = { selectedPastFlightSummary = summary }
+                                            )
+                                        }
                                     }
                                 }
                                 SettingsPage.DEBUG -> {
@@ -1458,51 +1747,13 @@ private fun XiroLiteBetaApp() {
                                         }) { Text("Export Beta Log") }
                                     }
                                 }
+                                SettingsPage.ABOUT -> {
+                                    item { InlineBackHeader(title = "About", onBack = { settingsPage = SettingsPage.ROOT }) }
+                                    item { AboutAppCard() }
+                                }
                                 SettingsPage.RELEASE_NOTES -> {
-                                    item { BackHeaderCard("Release Notes", onBack = { settingsPage = SettingsPage.ROOT }) }
-                                    item {
-                                        val notes = currentReleaseNotes()
-                                        Column(
-                                            modifier = Modifier
-                                                .padding(16.dp)
-                                                .fillMaxWidth()
-                                        ) {
-                                            Text(
-                                                text = "Version ${notes.version}",
-                                                style = androidx.compose.material3.MaterialTheme.typography.headlineSmall,
-                                                color = androidx.compose.material3.MaterialTheme.colorScheme.primary
-                                            )
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            
-                                            Text(
-                                                text = "What's New",
-                                                style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-                                                color = androidx.compose.material3.MaterialTheme.colorScheme.secondary
-                                            )
-                                            notes.changes.forEach { change ->
-                                                Text(
-                                                    text = "- $change",
-                                                    modifier = Modifier.padding(vertical = 4.dp),
-                                                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
-                                                )
-                                            }
-                                            
-                                            Spacer(modifier = Modifier.height(16.dp))
-                                            
-                                            Text(
-                                                text = "Known Issues",
-                                                style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
-                                                color = androidx.compose.material3.MaterialTheme.colorScheme.error
-                                            )
-                                            notes.knownIssues.forEach { issue ->
-                                                Text(
-                                                    text = "- $issue",
-                                                    modifier = Modifier.padding(vertical = 4.dp),
-                                                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
-                                                )
-                                            }
-                                        }
-                                    }
+                                    item { InlineBackHeader(title = "Release Notes", onBack = { settingsPage = SettingsPage.ROOT }) }
+                                    item { ReleaseNotesPageCard(notes = currentReleaseNotes()) }
                                 }
                             }
                         }
@@ -1511,6 +1762,7 @@ private fun XiroLiteBetaApp() {
                                 PullToRefreshLibraryCard(
                                     cameraLibrary = cameraLibrary,
                                     localItems = localLibraryItems,
+                                    debugModeEnabled = debugModeEnabled,
                                     libraryViewMode = libraryViewMode,
                                     libraryRefreshing = libraryRefreshing,
                                     onSelectViewMode = { libraryViewMode = it },
@@ -1518,6 +1770,7 @@ private fun XiroLiteBetaApp() {
                                     onOpenRemotePreview = { item -> selectedRemoteLibraryPreview = item }
                                 )
                             }
+                            item { CameraLibrarySummaryCard(cameraLibrary, debugModeEnabled) }
                         }
 
                     }
@@ -1905,10 +2158,10 @@ private fun buildUdpProbeExperimentExportText(
 
 @Composable
 private fun ConnectionStatusCard(connectionStatus: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    XiroAppCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Connection", style = MaterialTheme.typography.titleMedium)
-            Text(connectionStatus)
+            Text(connectionStatus, color = XiroDesignTokens.TextSecondary)
         }
     }
 }
@@ -1925,28 +2178,33 @@ private fun HeroCard(
     onToggleAdvanced: () -> Unit,
     debugModeEnabled: Boolean
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("XIRO Lite Beta", style = MaterialTheme.typography.headlineMedium)
-            Text("FPV + telemetry + relay test bench built from the current app and legacy XIRO app findings.")
+            Text("XIRO Lite Beta", style = MaterialTheme.typography.headlineMedium, color = XiroDesignTokens.AccentBright)
+            Text("FPV + telemetry + relay test bench built from the current app and legacy XIRO app findings.", color = XiroDesignTokens.TextSecondary)
             Text("Active profile: ${selectedProfile.displayName}", style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(
                 value = host,
                 onValueChange = onHostChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Drone host") }
+                label = { Text("Drone host") },
+                colors = xiroOutlinedTextFieldColors()
             )
-            Text(selectedProfile.notes, style = MaterialTheme.typography.bodySmall)
+            Text(selectedProfile.notes, style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextMuted)
             if (debugModeEnabled) {
-                Text("Phone IP: ${networkInfo.localIp ?: "Unknown"}")
-                Text("Gateway: ${networkInfo.gatewayIp ?: "Unknown"}")
-                Text("Drone Guess: ${networkInfo.guessedDroneIp ?: "Unknown"}")
-                Text("RTSP: $rtspUrl")
-                FilterChip(
+                Text("Phone IP: ${networkInfo.localIp ?: "Unknown"}", color = XiroDesignTokens.TextSecondary)
+                Text("Gateway: ${networkInfo.gatewayIp ?: "Unknown"}", color = XiroDesignTokens.TextSecondary)
+                Text("Drone Guess: ${networkInfo.guessedDroneIp ?: "Unknown"}", color = XiroDesignTokens.TextSecondary)
+                Text("RTSP: $rtspUrl", color = XiroDesignTokens.TextSecondary)
+                XiroToggleChip(
                     selected = advancedVisible,
-                    onClick = onToggleAdvanced,
-                    label = { Text(if (advancedVisible) "Advanced debug visible" else "Advanced debug hidden") }
-                )
+                    onClick = onToggleAdvanced
+                ) {
+                    Text(
+                        if (advancedVisible) "Advanced debug visible" else "Advanced debug hidden",
+                        color = if (advancedVisible) XiroDesignTokens.BackgroundBottom else XiroDesignTokens.TextPrimary
+                    )
+                }
             }
         }
     }
@@ -1956,11 +2214,12 @@ private fun HeroCard(
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun TopTelemetryBar(state: DroneStateUi) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Legacy HUD-inspired Top Bar", style = MaterialTheme.typography.titleMedium)
+            Text("Legacy HUD-inspired Top Bar", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                HudChip("Altitude", state.heightText)
+                HudChip("Elevation", state.baroHeightText)
+                HudChip("Target Elevation", state.targetHeightText)
                 HudChip("Speed", state.speedText)
                 HudChip("Distance", state.distanceText)
                 HudChip("Voltage", state.voltageText)
@@ -1983,13 +2242,13 @@ private fun TopTelemetryBar(state: DroneStateUi) {
 
 @Composable
 private fun HudChip(label: String, value: String) {
-    Card {
+    XiroPillSurface {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, style = MaterialTheme.typography.labelSmall)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = XiroDesignTokens.TextSecondary)
             if (label == "Wi-Fi") {
                 SignalStrengthValue(value = value)
             } else {
-                Text(value, style = MaterialTheme.typography.bodyMedium)
+                Text(value, style = MaterialTheme.typography.bodyMedium, color = XiroDesignTokens.TextPrimary)
             }
         }
     }
@@ -2003,15 +2262,15 @@ private fun PreflightCard(
     selectedHudItems: Set<String>,
     onToggleHudItem: (String, Boolean) -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Preflight Status", style = MaterialTheme.typography.titleMedium)
-            Text("Toggle any status to show or hide it in Live View.", style = MaterialTheme.typography.bodySmall, color = Color(0xFFD7DCE3))
+    XiroAppCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Status", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+            Text("Toggle any status to show or hide it in Live View.", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
             if (warnings.isNotEmpty()) {
                 warnings.forEach { warning ->
                     PreflightWarningRow(warning)
                 }
-                HorizontalDivider(color = Color(0x33FFFFFF))
+                HorizontalDivider(color = XiroDesignTokens.BorderLight)
             }
             items.forEach { item ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2019,12 +2278,12 @@ private fun PreflightCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         if (item.label == "Wi-Fi Signal") {
-                            Text(item.label)
+                            Text(item.label, color = XiroDesignTokens.TextPrimary)
                             SignalStrengthValue(value = item.value)
                         } else {
-                            Text("${item.label}: ${item.value}")
+                            Text("${item.label}: ${item.value}", color = XiroDesignTokens.TextPrimary)
                         }
-                        if (item.detail.isNotBlank()) Text(item.detail, style = MaterialTheme.typography.bodySmall)
+                        if (item.detail.isNotBlank()) Text(item.detail, style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Switch(
@@ -2050,8 +2309,9 @@ private fun PreflightWarningRow(warning: FlightWarning) {
         FlightWarningSeverity.CRITICAL -> Color(0xFFFF6E6E)
     }
 
-    Card(
-        colors = CardDefaults.cardColors(containerColor = containerColor)
+    XiroPillSurface(
+        containerColor = containerColor,
+        shape = RoundedCornerShape(18.dp)
     ) {
         Row(
             modifier = Modifier
@@ -2068,7 +2328,7 @@ private fun PreflightWarningRow(warning: FlightWarning) {
             )
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(warning.title, color = Color.White)
-                Text(warning.detail, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
+                Text(warning.detail, color = XiroDesignTokens.TextSecondary, style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -2089,26 +2349,32 @@ private fun XiroBrandHeader() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "XIRO",
-                color = Color(0xFF6BD224),
+                color = XiroDesignTokens.TextPrimary,
                 style = MaterialTheme.typography.headlineLarge
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = "Lite",
-                color = Color(0xFF6BD224),
+                color = XiroDesignTokens.AccentBright,
                 style = MaterialTheme.typography.headlineMedium
             )
         }
         Text(
-            text = "Discover Your Sky",
-            color = Color(0xFFB7BDC8),
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(color = XiroDesignTokens.AccentBright)) {
+                    append("Re")
+                }
+                withStyle(SpanStyle(color = XiroDesignTokens.TextSecondary)) {
+                    append("Discover Your Sky")
+                }
+            },
             style = MaterialTheme.typography.titleMedium
         )
         HorizontalDivider(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp),
-            color = Color(0x33FFFFFF)
+            color = XiroDesignTokens.BorderLight
         )
     }
 }
@@ -2119,49 +2385,88 @@ private fun XiroAppCard(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    Card(
+    XiroRaisedCard(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xCC3A404B)),
-        border = BorderStroke(1.dp, Color(0x22FFFFFF))
-    ) {
-        content()
-    }
+        shape = RoundedCornerShape(26.dp),
+        containerColor = XiroDesignTokens.Surface
+    ) { content() }
 }
 
 
 @Composable
 private fun CameraHomeCard(
+    profile: LegacyDroneProfile,
+    connectionStatus: String,
     detectedDroneLabel: String,
     onOpenCamera: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(420.dp)
+    val usesDroneLinkIcon = connectionStatus == "Connected to XIRO extender" &&
+        (profile.id == LegacyCompatibilityCatalog.xplorer.id || profile.id == LegacyCompatibilityCatalog.xplorer4k.id)
+    val usesDirectCameraIcon = connectionStatus == "Connected to camera directly"
+    val heroIcon = when {
+        usesDroneLinkIcon -> Icons.AutoMirrored.Outlined.Send
+        usesDirectCameraIcon -> Icons.Outlined.CameraAlt
+        else -> Icons.Outlined.CameraAlt
+    }
+    val heroTint = when {
+        usesDroneLinkIcon -> XiroDesignTokens.TextPrimary
+        usesDirectCameraIcon -> XiroDesignTokens.AccentBright
+        else -> XiroDesignTokens.TextPrimary
+    }
+    val heroLabel = when {
+        usesDroneLinkIcon -> "Open Drone Camera"
+        usesDirectCameraIcon -> "Open Camera"
+        else -> "Open Camera"
+    }
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Button(
-            onClick = onOpenCamera,
+        val heroPanelHeight = (maxWidth * 1.1f).coerceIn(320.dp, 430.dp)
+        val heroSize = (maxWidth * 0.34f).coerceIn(124.dp, 156.dp)
+        val innerSize = heroSize * 0.56f
+        val iconSize = (heroSize * 0.34f).coerceIn(42.dp, 56.dp)
+        val labelSpacing = (heroSize * 0.22f).coerceIn(18.dp, 30.dp)
+        Box(
             modifier = Modifier
-                .align(Alignment.Center)
-                .size(132.dp),
-            shape = CircleShape,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6BD224), contentColor = Color.Black)
+                .fillMaxWidth()
+                .height(heroPanelHeight)
         ) {
-            Icon(
-                imageVector = Icons.Outlined.CameraAlt,
-                contentDescription = "Open Camera",
-                modifier = Modifier.size(52.dp)
-            )
+            Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(labelSpacing)
+            ) {
+                XiroPillSurface(
+                    modifier = Modifier
+                        .size(heroSize)
+                        .clickable(onClick = onOpenCamera),
+                    shape = CircleShape,
+                    containerColor = XiroDesignTokens.SurfaceInset
+                ) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        XiroPillSurface(
+                            modifier = Modifier.size(innerSize),
+                            shape = CircleShape,
+                            containerColor = XiroDesignTokens.Accent
+                        ) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = heroIcon,
+                                    contentDescription = heroLabel,
+                                    modifier = Modifier.size(iconSize),
+                                    tint = heroTint
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    text = detectedDroneLabel,
+                    color = XiroDesignTokens.TextSecondary,
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
         }
-        Text(
-            text = detectedDroneLabel,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .padding(top = 184.dp),
-            color = Color(0xFFB7BDC8),
-            style = MaterialTheme.typography.titleSmall
-        )
     }
 }
 
@@ -2676,14 +2981,14 @@ private fun CameraRelayActionCard(
 private fun LibraryActionCard(
     onShowCameraTab: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         FlowRow(
             modifier = Modifier.padding(12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Pull down anywhere in the library grid to refresh.", style = MaterialTheme.typography.bodySmall)
-            Button(onClick = onShowCameraTab) { Text("Back to Camera") }
+            Text("Pull down anywhere in the library grid to refresh.", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
+            XiroSecondaryButton(onClick = onShowCameraTab) { Text("Back to Camera") }
         }
     }
 }
@@ -2698,38 +3003,326 @@ private fun ExtenderSettingsMenuCard(
     relayStatus: String,
     onEditName: () -> Unit,
     onEditPassword: () -> Unit,
+    measurementUnitLabel: String,
+    onOpenUnits: () -> Unit,
     debugModeEnabled: Boolean,
     onToggleDebugMode: () -> Unit,
     onBindCamera: () -> Unit,
-    onOpenReleaseNotes: () -> Unit,
     onOpenDebug: () -> Unit
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Wi-Fi range extender settings", style = MaterialTheme.typography.titleMedium)
+            Text("Wi-Fi range extender settings", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
             if (!enabled) {
-                Text("Connect to the XIRO range extender to manage repeater settings and camera binding.", style = MaterialTheme.typography.bodySmall)
-            }
-            SettingsRow("Modify your Wi-Fi Extender name", extenderName.ifBlank { "Unavailable" }, onEditName, enabled)
-            SettingsRow("Modify your Wi-Fi password", extenderPassword.ifBlank { "Unavailable" }, onEditPassword, enabled)
-            HorizontalDivider()
-            SettingsRow("Bind extender to camera", currentBoundCamera.ifBlank { "Not bound" }, onBindCamera, enabled)
-            Text("Repeater status: $relayStatus", style = MaterialTheme.typography.bodySmall)
-            HorizontalDivider()
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Debug Mode", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                FilterChip(
-                    selected = debugModeEnabled,
-                    onClick = onToggleDebugMode,
-                    label = { Text(if (debugModeEnabled) "On" else "Off") }
+                Text(
+                    "Connect to the XIRO range extender to manage repeater settings and camera binding.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = XiroDesignTokens.TextMuted
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onOpenReleaseNotes) { Text("Release Notes") }
-                if (debugModeEnabled) {
-                    Button(onClick = onOpenDebug) { Text("Advanced / Debug") }
+            SettingsRow("Modify your Wi-Fi Extender name", extenderName.ifBlank { "Unavailable" }, onEditName, enabled)
+            SettingsRow("Modify your Wi-Fi extender password", extenderPassword.ifBlank { "Unknown" }, onEditPassword, enabled)
+            SettingsRow("Set units", measurementUnitLabel, onOpenUnits, enabled = true)
+            HorizontalDivider()
+            SettingsRow("Bind extender to camera", currentBoundCamera.ifBlank { "Not bound" }, onBindCamera, enabled)
+            Text("Repeater status: $relayStatus", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
+            HorizontalDivider()
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Debug Mode", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), color = XiroDesignTokens.TextPrimary)
+                XiroToggleChip(selected = debugModeEnabled, onClick = onToggleDebugMode) {
+                    Text(
+                        if (debugModeEnabled) "On" else "Off",
+                        color = if (debugModeEnabled) XiroDesignTokens.BackgroundBottom else XiroDesignTokens.TextPrimary
+                    )
                 }
             }
+            if (debugModeEnabled) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    XiroSecondaryButton(onClick = onOpenDebug) { Text("Advanced / Debug") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnitsSettingsCard(
+    selectedUnit: MeasurementUnit,
+    onSelectUnit: (MeasurementUnit) -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("App units", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            Text(
+                "Choose how altitude, speed, and distance are shown across Telemetry, Live View, and flight-log replay.",
+                style = MaterialTheme.typography.bodySmall,
+                color = XiroDesignTokens.TextSecondary
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MeasurementUnit.entries.forEach { unit ->
+                    XiroToggleChip(
+                        selected = selectedUnit == unit,
+                        onClick = { onSelectUnit(unit) }
+                    ) {
+                        Text(
+                            unit.pageTitle,
+                            color = if (selectedUnit == unit) {
+                                XiroDesignTokens.BackgroundBottom
+                            } else {
+                                XiroDesignTokens.TextPrimary
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OfflineMapsMenuCard(
+    activeMap: OfflineMapFile?,
+    installedCount: Int,
+    onOpen: () -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Offline Maps", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            Text(
+                if (activeMap == null) {
+                    "No offline map imported yet. Import a local .map file to enable the legacy-style live-view map inset."
+                } else {
+                    "Active region: ${activeMap.displayName}  •  ${installedCount} installed map${if (installedCount == 1) "" else "s"}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = XiroDesignTokens.TextSecondary
+            )
+            XiroSecondaryButton(onClick = onOpen) { Text("Manage Offline Maps") }
+        }
+    }
+}
+
+@Composable
+private fun OfflineMapsSettingsCard(
+    installedMaps: List<OfflineMapFile>,
+    statusText: String,
+    onOpenDownloads: () -> Unit,
+    onImport: () -> Unit,
+    onSelectActive: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Offline Maps", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            Text(
+                "Use local .map regions for the live-view map inset and map/fullscreen swap. This keeps XIRO Lite off public live tile servers while preserving a legal offline map workflow.",
+                style = MaterialTheme.typography.bodySmall,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                XiroSecondaryButton(
+                    onClick = onOpenDownloads,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Open Map Downloads")
+                }
+                XiroPrimaryButton(
+                    onClick = onImport,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Import .map File")
+                }
+            }
+            if (statusText.isNotBlank()) {
+                XiroRaisedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    containerColor = XiroDesignTokens.SurfaceInset
+                ) {
+                    Text(
+                        text = statusText,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        color = XiroDesignTokens.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            XiroRaisedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+                containerColor = XiroDesignTokens.SurfaceInset
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Attribution", style = MaterialTheme.typography.titleSmall, color = XiroDesignTokens.AccentBright)
+                    Text(OfflineMapManager.MAP_ATTRIBUTION, color = XiroDesignTokens.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    Text(OfflineMapManager.MAP_ENGINE_ATTRIBUTION, color = XiroDesignTokens.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (installedMaps.isEmpty()) {
+                XiroRaisedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                    containerColor = XiroDesignTokens.SurfaceInset
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("No imported map files yet.", color = XiroDesignTokens.TextPrimary, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Download a region from the official mapsforge source, then import the .map file here.",
+                            color = XiroDesignTokens.TextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            } else {
+                installedMaps.forEach { mapFile ->
+                    XiroRaisedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(22.dp),
+                        containerColor = XiroDesignTokens.SurfaceInset
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(mapFile.displayName, color = XiroDesignTokens.TextPrimary, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "${humanReadableBytes(mapFile.sizeBytes)}  •  ${mapFile.fileName}",
+                                color = XiroDesignTokens.TextSecondary,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (mapFile.isActive) {
+                                    XiroToggleChip(selected = true, onClick = {}) {
+                                        Text("Active", color = XiroDesignTokens.BackgroundBottom)
+                                    }
+                                } else {
+                                    XiroSecondaryButton(onClick = { onSelectActive(mapFile.fileName) }) {
+                                        Text("Use This Map")
+                                    }
+                                }
+                                XiroSecondaryButton(onClick = { onDelete(mapFile.fileName) }) {
+                                    Text("Delete")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PastFlightsMenuCard(
+    flightCount: Int,
+    loading: Boolean,
+    onOpen: () -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Past Flights", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (loading) {
+                    "Scanning saved HJ logs..."
+                } else {
+                    "$flightCount saved HJ flight log${if (flightCount == 1) "" else "s"} ready to review."
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+            XiroSecondaryButton(onClick = onOpen) { Text("Open Past Flights") }
+        }
+    }
+}
+
+@Composable
+private fun SettingsFooterActionsCard(
+    onOpenAbout: () -> Unit,
+    onOpenReleaseNotes: () -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("App", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                XiroSecondaryButton(
+                    onClick = onOpenAbout,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("About")
+                }
+                XiroSecondaryButton(
+                    onClick = onOpenReleaseNotes,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Release Notes")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PastFlightsHeaderCard(
+    flightCount: Int,
+    loading: Boolean,
+    onRefresh: () -> Unit
+) {
+    XiroAppCard {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Saved HJ Flight Logs", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (loading) {
+                    "Refreshing the local HJ library..."
+                } else {
+                    "$flightCount flight log${if (flightCount == 1) "" else "s"} found in XIRO/hj."
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+            XiroSecondaryButton(onClick = onRefresh) { Text("Refresh") }
+        }
+    }
+}
+
+@Composable
+private fun PastFlightsEmptyStateCard(message: String) {
+    XiroAppCard {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Past Flights", style = MaterialTheme.typography.titleMedium)
+            Text(message, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun PastFlightEntryCard(
+    summary: HjFlightSummary,
+    onOpen: () -> Unit
+) {
+    XiroRaisedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen),
+        containerColor = XiroDesignTokens.Surface
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                summary.fileName,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                listOf(
+                    summary.startTimestampText.takeIf { it != "Unknown" },
+                    summary.durationMs?.let(::formatDurationMillis),
+                    "${summary.recordCount} records",
+                    humanReadableBytes(summary.fileSizeBytes)
+                ).joinToString("  •  "),
+                style = MaterialTheme.typography.bodySmall,
+                color = XiroDesignTokens.TextSecondary
+            )
         }
     }
 }
@@ -2740,28 +3333,206 @@ private fun ReleaseNotesDialog(
     notes: ReleaseNotes,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = {},
-        title = { Text("What's New in XIRO Lite ${notes.version}") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Changes", style = MaterialTheme.typography.titleSmall)
-                notes.changes.forEach { change ->
-                    Text("- $change", style = MaterialTheme.typography.bodySmall)
-                }
-                if (notes.knownIssues.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Known Issues", style = MaterialTheme.typography.titleSmall)
-                    notes.knownIssues.forEach { issue ->
-                        Text("- $issue", style = MaterialTheme.typography.bodySmall)
+    Dialog(onDismissRequest = onDismiss) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "What's New in XIRO Lite ${notes.version}",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = XiroDesignTokens.TextPrimary
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("Changes", style = MaterialTheme.typography.titleSmall, color = XiroDesignTokens.AccentBright)
+                    notes.changes.forEach { change ->
+                        Text("- $change", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
+                    }
+                    if (notes.knownIssues.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Known Issues", style = MaterialTheme.typography.titleSmall, color = XiroDesignTokens.AccentBright)
+                        notes.knownIssues.forEach { issue ->
+                            Text("- $issue", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
+                        }
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    XiroPrimaryButton(onClick = onDismiss) { Text("OK") }
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("OK") }
         }
-    )
+    }
+}
+
+@Composable
+private fun DisclaimerDialog(
+    disclaimerText: String,
+    onAgree: () -> Unit,
+    onExit: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = { },
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false
+        )
+    ) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "Disclaimer",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = XiroDesignTokens.TextPrimary
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    disclaimerText
+                        .split("\n\n")
+                        .filter { it.isNotBlank() }
+                        .forEach { paragraph ->
+                            Text(
+                                text = paragraph.trim(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = XiroDesignTokens.TextSecondary
+                            )
+                        }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    XiroSecondaryButton(onClick = onExit) { Text("Exit App") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    XiroPrimaryButton(onClick = onAgree) { Text("Agree and Continue") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReleaseNotesPageCard(notes: ReleaseNotes) {
+    XiroAppCard {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "Version ${notes.version}",
+                style = MaterialTheme.typography.titleLarge,
+                color = XiroDesignTokens.TextPrimary
+            )
+            Text(
+                text = "What’s New",
+                style = MaterialTheme.typography.titleMedium,
+                color = XiroDesignTokens.AccentBright
+            )
+            notes.changes.forEach { change ->
+                Text(
+                    text = "- $change",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = XiroDesignTokens.TextSecondary
+                )
+            }
+            if (notes.knownIssues.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Known Issues",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = XiroDesignTokens.AccentBright
+                )
+                notes.knownIssues.forEach { issue ->
+                    Text(
+                        text = "- $issue",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AboutAppCard() {
+    val about = remember { currentAboutInfo() }
+    XiroAppCard {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("About", style = MaterialTheme.typography.titleLarge, color = XiroDesignTokens.TextPrimary)
+            Text(about.appName, style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+            FlightLogDetailRow("Version", about.version)
+            FlightLogDetailRow("Build", about.build)
+            FlightLogDetailRow("Status", about.status)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                about.summary,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text(
+                about.preservationText,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text(
+                about.compatibilityNote,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text(
+                about.affiliationNote,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Project", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+            Text(
+                about.projectSummary,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text("Project page:", color = XiroDesignTokens.TextPrimary)
+            Text(about.projectPageUrl, color = XiroDesignTokens.TextSecondary)
+            Text("Report issues:", color = XiroDesignTokens.TextPrimary)
+            Text(about.issueTrackerUrl, color = XiroDesignTokens.TextSecondary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("Map Attribution", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+            Text(
+                about.mapAttribution,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text(
+                about.mapEngineAttribution,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("License", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+            Text(
+                about.licenseSummary,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Text(
+                about.proprietaryNotice,
+                color = XiroDesignTokens.TextSecondary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                about.communityThanks,
+                color = XiroDesignTokens.TextSecondary
+            )
+        }
+    }
 }
 
 @Composable
@@ -2769,31 +3540,67 @@ private fun DebugModeWarningDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Enable Debug Mode?") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Debug Mode exposes debug and experimental XIRO Lite features intended for testing only.")
-                Text("This can reveal raw logs, command runners, and camera tools that may behave differently from the normal app flow.")
-                Text("Only continue if you are actively testing or collecting debug results.")
+    Dialog(onDismissRequest = onDismiss) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("Enable Debug Mode?", style = MaterialTheme.typography.titleLarge, color = XiroDesignTokens.TextPrimary)
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Debug Mode exposes debug and experimental XIRO Lite features intended for testing only.",
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                    Text(
+                        "This can reveal raw logs, command runners, and camera tools that may behave differently from the normal app flow.",
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                    Text(
+                        "Only continue if you are actively testing or collecting debug results.",
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    XiroSecondaryButton(onClick = onDismiss) { Text("Cancel") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    XiroPrimaryButton(onClick = onConfirm) { Text("OK") }
+                }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) { Text("OK") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
-    )
+    }
 }
 
 @Composable
 private fun SettingsRow(label: String, value: String, onClick: () -> Unit, enabled: Boolean = true) {
-    Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(label)
-            Text(value)
+    XiroRaisedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        containerColor = if (enabled) XiroDesignTokens.SurfaceInset else XiroDesignTokens.SurfaceBottom
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = XiroDesignTokens.TextMuted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) XiroDesignTokens.TextPrimary else XiroDesignTokens.TextMuted,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -2801,24 +3608,56 @@ private fun SettingsRow(label: String, value: String, onClick: () -> Unit, enabl
 
 @Composable
 private fun BackHeaderCard(title: String, onBack: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Button(onClick = onBack) { Text("Back") }
+            XiroSecondaryButton(onClick = onBack) { Text("Back") }
             Text(title, style = MaterialTheme.typography.titleMedium)
         }
+    }
+}
+
+@Composable
+private fun InlineBackHeader(title: String, onBack: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Back",
+                    tint = Color.White
+                )
+            }
+        }
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleLarge,
+            color = XiroDesignTokens.TextPrimary
+        )
     }
 }
 
 
 @Composable
 private fun ExtenderNameCard(name: String, onNameChange: (String) -> Unit, onBack: () -> Unit, onApply: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Set Wi-Fi range extender name", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(value = name, onValueChange = onNameChange, modifier = Modifier.fillMaxWidth(), label = { Text("Modify Wi-Fi range extender name") })
+            Text("Set Wi-Fi range extender name", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Modify Wi-Fi range extender name") },
+                colors = xiroOutlinedTextFieldColors()
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onBack) { Text("Back") }
-                Button(onClick = onApply) { Text("Apply") }
+                XiroSecondaryButton(onClick = onBack) { Text("Back") }
+                XiroPrimaryButton(onClick = onApply) { Text("Apply") }
             }
         }
     }
@@ -2827,13 +3666,19 @@ private fun ExtenderNameCard(name: String, onNameChange: (String) -> Unit, onBac
 
 @Composable
 private fun ExtenderPasswordCard(password: String, onPasswordChange: (String) -> Unit, onBack: () -> Unit, onApply: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Set Wi-Fi range extender password", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(value = password, onValueChange = onPasswordChange, modifier = Modifier.fillMaxWidth(), label = { Text("Modify Wi-Fi password") })
+            Text("Set Wi-Fi range extender password", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            OutlinedTextField(
+                value = password,
+                onValueChange = onPasswordChange,
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Modify Wi-Fi extender password") },
+                colors = xiroOutlinedTextFieldColors()
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onBack) { Text("Back") }
-                Button(onClick = onApply) { Text("Apply") }
+                XiroSecondaryButton(onClick = onBack) { Text("Back") }
+                XiroPrimaryButton(onClick = onApply) { Text("Apply") }
             }
         }
     }
@@ -2855,31 +3700,26 @@ private fun BindExtenderCameraCard(
         networks.filter { network -> isSelectableBindSsid(network.ssid) }
     }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
-          Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-              Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                  Button(onClick = onBack) { Text("Back") }
-                  Text("Bind extender to camera", style = MaterialTheme.typography.titleMedium)
-              }
-              Text("Repeater status: ${relayStatus.ifBlank { "Unknown" }}")
-              Text("Current bound network: ${currentBoundCamera.ifBlank { "Unknown" }}")
-              Text("Tap a candidate to enter its password and start the bind flow.")
-              if (!enabled) {
-                  Text("Connect to the XIRO range extender to load the Wi-Fi list.")
-              } else if (validNetworks.isEmpty()) {
-                  Text("No networks returned")
-                  OutlinedButton(onClick = onRefresh) { Text("Retry") }
+    XiroAppCard {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                XiroSecondaryButton(onClick = onBack) { Text("Back") }
+                Text("Bind extender to camera", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            }
+            Text("Repeater status: ${relayStatus.ifBlank { "Unknown" }}", color = XiroDesignTokens.TextSecondary)
+            Text("Current bound network: ${currentBoundCamera.ifBlank { "Unknown" }}", color = XiroDesignTokens.TextSecondary)
+            Text("Tap a candidate to enter its password and start the bind flow.", color = XiroDesignTokens.TextMuted)
+            if (!enabled) {
+                Text("Connect to the XIRO range extender to load the Wi-Fi list.", color = XiroDesignTokens.TextMuted)
+            } else if (validNetworks.isEmpty()) {
+                Text("No networks returned", color = XiroDesignTokens.TextSecondary)
+                XiroSecondaryButton(onClick = onRefresh) { Text("Retry") }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                       validNetworks.forEach { network ->
-                          Button(
+                          XiroSecondaryButton(
                               onClick = { onSelect(network) },
-                              modifier = Modifier.fillMaxWidth(),
-                              colors = if (selectedSsid == network.ssid) {
-                                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                            } else {
-                                ButtonDefaults.buttonColors()
-                            }
+                              modifier = Modifier.fillMaxWidth()
                           ) {
                               Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                   Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -2900,7 +3740,7 @@ private fun BindExtenderCameraCard(
                               }
                           }
                       }
-                      OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
+                      XiroSecondaryButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
                           Text("Search again")
                       }
                   }
@@ -2918,14 +3758,13 @@ private fun RelayBindCandidateDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Bind extender to camera") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("SSID: ${network.ssid}")
-                network.mac?.takeIf { it.isNotBlank() }?.let { Text("MAC: $it") }
-                network.channel?.takeIf { it.isNotBlank() }?.let { Text("Channel: $it") }
+    Dialog(onDismissRequest = onDismiss) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Bind extender to camera", style = MaterialTheme.typography.titleLarge, color = XiroDesignTokens.TextPrimary)
+                Text("SSID: ${network.ssid}", color = XiroDesignTokens.TextSecondary)
+                network.mac?.takeIf { it.isNotBlank() }?.let { Text("MAC: $it", color = XiroDesignTokens.TextSecondary) }
+                network.channel?.takeIf { it.isNotBlank() }?.let { Text("Channel: $it", color = XiroDesignTokens.TextSecondary) }
                 OutlinedTextField(
                     value = password,
                     onValueChange = onPasswordChange,
@@ -2933,40 +3772,41 @@ private fun RelayBindCandidateDialog(
                     singleLine = true,
                     label = { Text("Camera Wi-Fi password") },
                     placeholder = { Text("Enter password") },
-                    enabled = !bindingInProgress
+                    enabled = !bindingInProgress,
+                    colors = xiroOutlinedTextFieldColors()
                 )
                 Text(
                     "Legacy XIRO prompts for the candidate password before sending the bind request.",
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    color = XiroDesignTokens.TextMuted
                 )
                 if (bindingInProgress) {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Text("Binding and refreshing extender status...")
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = XiroDesignTokens.AccentBright
+                        )
+                        Text("Binding and refreshing extender status...", color = XiroDesignTokens.TextSecondary)
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    XiroSecondaryButton(onClick = onDismiss, enabled = !bindingInProgress) { Text("Cancel") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    XiroPrimaryButton(onClick = onConfirm, enabled = !bindingInProgress) {
+                        Text(if (bindingInProgress) "Binding..." else "Bind")
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onConfirm,
-                enabled = !bindingInProgress
-            ) {
-                Text(if (bindingInProgress) "Binding..." else "Bind")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = !bindingInProgress
-            ) {
-                Text("Cancel")
-            }
         }
-    )
+    }
 }
 
 
@@ -2998,39 +3838,53 @@ private fun defaultRelayBindPasswordForCandidate(candidate: RelayWifiCandidate):
 private fun PullToRefreshLibraryCard(
     cameraLibrary: CameraLibraryState,
     localItems: List<LocalLibraryItem>,
+    debugModeEnabled: Boolean,
     libraryViewMode: LibraryViewMode,
     libraryRefreshing: Boolean,
     onSelectViewMode: (LibraryViewMode) -> Unit,
     onOpenPreview: (LocalLibraryItem) -> Unit,
     onOpenRemotePreview: (CameraMediaItem) -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Library", style = MaterialTheme.typography.titleMedium)
+                Text("Library", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
+                    XiroToggleChip(
                         selected = libraryViewMode == LibraryViewMode.REMOTE_CAMERA,
-                        onClick = { onSelectViewMode(LibraryViewMode.REMOTE_CAMERA) },
-                        label = { Text("Camera SD") }
-                    )
-                    FilterChip(
+                        onClick = { onSelectViewMode(LibraryViewMode.REMOTE_CAMERA) }
+                    ) {
+                        Text(
+                            "Camera SD",
+                            color = if (libraryViewMode == LibraryViewMode.REMOTE_CAMERA) XiroDesignTokens.BackgroundBottom else XiroDesignTokens.TextPrimary
+                        )
+                    }
+                    XiroToggleChip(
                         selected = libraryViewMode == LibraryViewMode.LOCAL_PHONE,
-                        onClick = { onSelectViewMode(LibraryViewMode.LOCAL_PHONE) },
-                        label = { Text("Local") }
-                    )
+                        onClick = { onSelectViewMode(LibraryViewMode.LOCAL_PHONE) }
+                    ) {
+                        Text(
+                            "Local",
+                            color = if (libraryViewMode == LibraryViewMode.LOCAL_PHONE) XiroDesignTokens.BackgroundBottom else XiroDesignTokens.TextPrimary
+                        )
+                    }
                 }
             }
             if (libraryRefreshing && libraryViewMode == LibraryViewMode.REMOTE_CAMERA) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = XiroDesignTokens.AccentBright,
+                    trackColor = XiroDesignTokens.SurfaceInset
+                )
             }
             when (libraryViewMode) {
                 LibraryViewMode.REMOTE_CAMERA -> CameraLibraryCard(
                     cameraLibrary = cameraLibrary,
+                    debugModeEnabled = debugModeEnabled,
                     onOpenPreview = onOpenRemotePreview,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -3054,19 +3908,29 @@ private fun LocalLibraryCard(
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (localItems.isEmpty()) {
-            Text("No local XIRO media yet.")
+            Text("No local XIRO media yet.", color = XiroDesignTokens.TextMuted)
         } else {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                localItems.take(80).forEach { item ->
-                    LocalLibraryThumbnail(
-                        item = item,
-                        onOpenPreview = onOpenPreview,
-                        modifier = Modifier.size(104.dp)
-                    )
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val tileSpacing = 8.dp
+                val columns = when {
+                    maxWidth >= 280.dp -> 4
+                    maxWidth >= 210.dp -> 3
+                    else -> 2
+                }
+                val tileSize = ((maxWidth - (tileSpacing * (columns - 1))).coerceAtLeast(0.dp)) / columns
+                FlowRow(
+                    maxItemsInEachRow = columns,
+                    horizontalArrangement = Arrangement.spacedBy(tileSpacing),
+                    verticalArrangement = Arrangement.spacedBy(tileSpacing),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    localItems.take(80).forEach { item ->
+                        LocalLibraryThumbnail(
+                            item = item,
+                            onOpenPreview = onOpenPreview,
+                            modifier = Modifier.size(tileSize)
+                        )
+                    }
                 }
             }
         }
@@ -3084,12 +3948,11 @@ private fun LocalLibraryThumbnail(
         value = withContext(Dispatchers.IO) { loadLocalPreviewBitmap(item) }
     }.value
     if (bitmap != null) {
-        Box(
+        XiroPillSurface(
             modifier = modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF1F232A))
                 .clickable { onOpenPreview(item) },
-            contentAlignment = Alignment.Center
+            shape = RoundedCornerShape(14.dp),
+            containerColor = XiroDesignTokens.SurfaceInset
         ) {
             Image(
                 bitmap = bitmap.asImageBitmap(),
@@ -3099,18 +3962,19 @@ private fun LocalLibraryThumbnail(
             )
         }
     } else {
-        Box(
+        XiroPillSurface(
             modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.DarkGray)
                 .clickable { onOpenPreview(item) },
-            contentAlignment = Alignment.Center
+            shape = RoundedCornerShape(14.dp),
+            containerColor = XiroDesignTokens.SurfaceInset
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(24.dp),
-                strokeWidth = 2.dp,
-                color = Color.White
-            )
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White
+                )
+            }
         }
     }
 }
@@ -3194,20 +4058,24 @@ private fun LocalMediaPreviewDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
-                }
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
+                XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                    IconButton(onClick = onDismiss) {
                         Icon(
-                            imageVector = Icons.Outlined.MoreVert,
-                            contentDescription = "More",
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = "Back",
                             tint = Color.White
                         )
+                    }
+                }
+                Box {
+                    XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Outlined.MoreVert,
+                                contentDescription = "More",
+                                tint = Color.White
+                            )
+                        }
                     }
                     DropdownMenu(
                         expanded = showMenu,
@@ -3231,13 +4099,18 @@ private fun LocalMediaPreviewDialog(
                 }
             }
             if (items.size > 1) {
-                Text(
-                    text = "${pagerState.currentPage + 1} / ${items.size}",
+                XiroPillSurface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .padding(bottom = 22.dp),
-                    color = Color.White
-                )
+                    containerColor = XiroDesignTokens.SurfaceOverlay
+                ) {
+                    Text(
+                        text = "${pagerState.currentPage + 1} / ${items.size}",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = Color.White
+                    )
+                }
             }
         }
     }
@@ -3350,16 +4223,21 @@ private fun CameraCaptureCard(lastAction: CameraOperationResult?) {
 
 
 @Composable
-private fun CameraLibrarySummaryCard(cameraLibrary: CameraLibraryState) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+private fun CameraLibrarySummaryCard(cameraLibrary: CameraLibraryState, debugModeEnabled: Boolean) {
+    val summaryText = when {
+        cameraLibrary.lastRefreshMessage.isBlank() -> "Library has not been refreshed yet."
+        !debugModeEnabled && cameraLibrary.items.isEmpty() -> "No items discovered."
+        else -> cameraLibrary.lastRefreshMessage
+    }
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Library Summary", style = MaterialTheme.typography.titleMedium)
-            Text(cameraLibrary.lastRefreshMessage.ifBlank { "Library has not been refreshed yet." })
-            Text("Items: ${cameraLibrary.items.size}")
+            Text("Library Summary", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
+            Text(summaryText, color = XiroDesignTokens.TextSecondary)
+            Text("Items: ${cameraLibrary.items.size}", color = XiroDesignTokens.TextSecondary)
             if (cameraLibrary.items.isNotEmpty()) {
                 val photos = cameraLibrary.items.count { it.kind == MediaKind.PHOTO }
                 val videos = cameraLibrary.items.count { it.kind == MediaKind.VIDEO }
-                Text("Photos: $photos   Videos: $videos")
+                Text("Photos: $photos   Videos: $videos", color = XiroDesignTokens.TextSecondary)
             }
         }
     }
@@ -3368,18 +4246,18 @@ private fun CameraLibrarySummaryCard(cameraLibrary: CameraLibraryState) {
 
 @Composable
 private fun CameraTraceLogCard(entries: List<CameraActionResult>) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    XiroAppCard {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Camera Request / Response Log", style = MaterialTheme.typography.titleMedium)
+            Text("Camera Request / Response Log", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.TextPrimary)
             if (entries.isEmpty()) {
-                Text("No camera requests logged yet.")
+                Text("No camera requests logged yet.", color = XiroDesignTokens.TextMuted)
             } else {
                 entries.take(20).forEach { entry ->
-                    Text(entry.action)
-                    Text(entry.status, style = MaterialTheme.typography.bodySmall)
-                    if (entry.url.isNotBlank()) Text(entry.url, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-                    if (entry.body.isNotBlank()) Text(entry.body.take(220), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-                    HorizontalDivider()
+                    Text(entry.action, color = XiroDesignTokens.TextPrimary)
+                    Text(entry.status, style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
+                    if (entry.url.isNotBlank()) Text(entry.url, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = XiroDesignTokens.TextMuted)
+                    if (entry.body.isNotBlank()) Text(entry.body.take(220), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = XiroDesignTokens.TextMuted)
+                    HorizontalDivider(color = XiroDesignTokens.BorderLight)
                 }
             }
         }
@@ -3390,31 +4268,42 @@ private fun CameraTraceLogCard(entries: List<CameraActionResult>) {
 @Composable
 private fun CameraLibraryCard(
     cameraLibrary: CameraLibraryState,
+    debugModeEnabled: Boolean,
     onOpenPreview: (CameraMediaItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (cameraLibrary.items.isEmpty()) {
-            Text("No camera SD media discovered yet.")
+            Text("No camera SD media discovered yet.", color = XiroDesignTokens.TextMuted)
         } else {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                cameraLibrary.items.take(60).forEach { item ->
-                    CameraThumbnail(
-                        item = item,
-                        onOpenPreview = onOpenPreview,
-                        modifier = Modifier.size(104.dp)
-                    )
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val tileSpacing = 8.dp
+                val columns = when {
+                    maxWidth >= 280.dp -> 4
+                    maxWidth >= 210.dp -> 3
+                    else -> 2
+                }
+                val tileSize = ((maxWidth - (tileSpacing * (columns - 1))).coerceAtLeast(0.dp)) / columns
+                FlowRow(
+                    maxItemsInEachRow = columns,
+                    horizontalArrangement = Arrangement.spacedBy(tileSpacing),
+                    verticalArrangement = Arrangement.spacedBy(tileSpacing),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    cameraLibrary.items.take(60).forEach { item ->
+                        CameraThumbnail(
+                            item = item,
+                            onOpenPreview = onOpenPreview,
+                            modifier = Modifier.size(tileSize)
+                        )
+                    }
                 }
             }
         }
-        if (cameraLibrary.rawResponses.isNotEmpty() && cameraLibrary.items.isEmpty()) {
+        if (debugModeEnabled && cameraLibrary.rawResponses.isNotEmpty() && cameraLibrary.items.isEmpty()) {
             HorizontalDivider()
             cameraLibrary.rawResponses.take(4).forEach { response ->
-                Text("${response.action}: ${response.status}", style = MaterialTheme.typography.bodySmall)
+                Text("${response.action}: ${response.status}", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextMuted)
             }
         }
     }
@@ -3430,50 +4319,91 @@ private fun CameraThumbnail(
     onOpenPreview: (CameraMediaItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val localLibraryManager = remember { LocalLibraryManager(context) }
     val previewUrls = item.previewUrls.ifEmpty { listOfNotNull(item.previewUrl) }
-    if (previewUrls.isEmpty()) {
-        Box(
-            modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.DarkGray)
-                .clickable { onOpenPreview(item) },
-            contentAlignment = Alignment.Center
-        ) {
-            Text(if (item.kind == MediaKind.VIDEO) "Video" else "No\nPreview", color = Color.White)
-        }
-        return
-    }
     val imageState = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.name, *previewUrls.toTypedArray()) {
-        value = withContext(Dispatchers.IO) { loadBitmapFromUrls(previewUrls) }
+        value = withContext(Dispatchers.IO) { loadRemoteCameraThumbnail(item, localLibraryManager) }
     }
     val bitmap = imageState.value
     if (bitmap == null) {
-        Box(
+        XiroPillSurface(
             modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.DarkGray)
                 .clickable { onOpenPreview(item) },
-            contentAlignment = Alignment.Center
+            shape = RoundedCornerShape(14.dp),
+            containerColor = XiroDesignTokens.SurfaceInset
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(24.dp),
-                strokeWidth = 2.dp,
-                color = Color.White
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (previewUrls.isEmpty() && item.kind == MediaKind.PHOTO) {
+                    Text(
+                        "No\nPreview",
+                        color = Color.White,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                } else if (previewUrls.isEmpty() && item.kind == MediaKind.VIDEO) {
+                    Text(
+                        "Video",
+                        color = Color.White,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                } else {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .align(Alignment.Center),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                }
+                if (item.kind == MediaKind.VIDEO) {
+                    VideoThumbnailBadge(modifier = Modifier.align(Alignment.TopStart))
+                }
+            }
         }
     } else {
-        Box(
+        XiroPillSurface(
             modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF1F232A))
                 .clickable { onOpenPreview(item) },
-            contentAlignment = Alignment.Center
+            shape = RoundedCornerShape(14.dp),
+            containerColor = XiroDesignTokens.SurfaceInset
         ) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
+            Box(modifier = Modifier.fillMaxSize()) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                if (item.kind == MediaKind.VIDEO) {
+                    VideoThumbnailBadge(modifier = Modifier.align(Alignment.TopStart))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoThumbnailBadge(modifier: Modifier = Modifier) {
+    XiroPillSurface(
+        modifier = modifier.padding(6.dp),
+        shape = RoundedCornerShape(10.dp),
+        containerColor = XiroDesignTokens.SurfaceOverlay
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.PlayArrow,
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                tint = Color.White,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                "Video",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall
             )
         }
     }
@@ -3485,11 +4415,13 @@ private fun RemotePhotoPreviewDialog(
     onDismiss: () -> Unit,
     onDownload: () -> Unit
 ) {
+    val context = LocalContext.current
+    val localLibraryManager = remember { LocalLibraryManager(context) }
     var showMenu by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     val previewUrls = item.previewUrls.ifEmpty { listOfNotNull(item.previewUrl, item.downloadUrl) }
     val bitmap = androidx.compose.runtime.produceState<android.graphics.Bitmap?>(initialValue = null, item.name, *previewUrls.toTypedArray()) {
-        value = if (item.kind == MediaKind.PHOTO) withContext(Dispatchers.IO) { loadBitmapFromUrls(previewUrls) } else null
+        value = withContext(Dispatchers.IO) { loadRemoteCameraThumbnail(item, localLibraryManager) }
     }.value
     val mediaInfo = androidx.compose.runtime.produceState<LibraryMediaInfo?>(initialValue = null, showInfo, item.name) {
         value = if (showInfo) withContext(Dispatchers.IO) { buildRemoteLibraryMediaInfo(item) } else null
@@ -3524,7 +4456,11 @@ private fun RemotePhotoPreviewDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = if (item.kind == MediaKind.PHOTO) "Preview still loading or unavailable" else "Remote camera videos can be downloaded to local XIRO storage for playback.",
+                            text = if (item.kind == MediaKind.PHOTO) {
+                                "Preview still loading or unavailable"
+                            } else {
+                                "No remote video preview available yet. Download to local XIRO storage for full playback."
+                            },
                             color = Color.White
                         )
                     }
@@ -3539,20 +4475,24 @@ private fun RemotePhotoPreviewDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                        contentDescription = "Back",
-                        tint = Color.White
-                    )
-                }
-                Box {
-                    IconButton(onClick = { showMenu = true }) {
+                XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                    IconButton(onClick = onDismiss) {
                         Icon(
-                            imageVector = Icons.Outlined.MoreVert,
-                            contentDescription = "More",
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = "Back",
                             tint = Color.White
                         )
+                    }
+                }
+                Box {
+                    XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Outlined.MoreVert,
+                                contentDescription = "More",
+                                tint = Color.White
+                            )
+                        }
                     }
                     DropdownMenu(
                         expanded = showMenu,
@@ -3592,31 +4532,34 @@ private fun LibraryDownloadProgressDialog(progress: LibraryDownloadProgress) {
         if (totalBytes == null || totalBytes <= 0L) null
         else (progress.bytesRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
     }
-    AlertDialog(
-        onDismissRequest = { },
-        title = { Text("Downloading") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(progress.title)
+    Dialog(onDismissRequest = { }) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Downloading", style = MaterialTheme.typography.titleLarge, color = XiroDesignTokens.TextPrimary)
+                Text(progress.title, color = XiroDesignTokens.TextSecondary)
                 if (progressFraction != null) {
                     LinearProgressIndicator(
                         progress = { progressFraction },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        color = XiroDesignTokens.AccentBright,
+                        trackColor = XiroDesignTokens.SurfaceInset
                     )
-                    Text("${humanReadableBytes(progress.bytesRead)} / ${humanReadableBytes(totalBytes)}")
+                    Text(
+                        "${humanReadableBytes(progress.bytesRead)} / ${humanReadableBytes(totalBytes)}",
+                        color = XiroDesignTokens.TextSecondary
+                    )
                 } else {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        CircularProgressIndicator()
-                        Text(humanReadableBytes(progress.bytesRead))
+                        CircularProgressIndicator(color = XiroDesignTokens.AccentBright)
+                        Text(humanReadableBytes(progress.bytesRead), color = XiroDesignTokens.TextSecondary)
                     }
                 }
             }
-        },
-        confirmButton = {}
-    )
+        }
+    }
 }
 
 @Composable
@@ -3624,32 +4567,311 @@ private fun LibraryMediaInfoDialog(
     info: LibraryMediaInfo?,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Info") },
-        text = {
-            if (info == null) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator()
-                    Text("Loading media details...")
+    Dialog(onDismissRequest = onDismiss) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Info", style = MaterialTheme.typography.titleLarge, color = XiroDesignTokens.TextPrimary)
+                if (info == null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(color = XiroDesignTokens.AccentBright)
+                        Text("Loading media details...", color = XiroDesignTokens.TextSecondary)
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("File: ${info.fileName}", color = XiroDesignTokens.TextSecondary)
+                        Text("Size: ${info.sizeText}", color = XiroDesignTokens.TextSecondary)
+                        Text("Resolution: ${info.resolutionText}", color = XiroDesignTokens.TextSecondary)
+                        Text("Taken: ${info.capturedText}", color = XiroDesignTokens.TextSecondary)
+                        info.durationText?.let { Text("Length: $it", color = XiroDesignTokens.TextSecondary) }
+                    }
                 }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("File: ${info.fileName}")
-                    Text("Size: ${info.sizeText}")
-                    Text("Resolution: ${info.resolutionText}")
-                    Text("Taken: ${info.capturedText}")
-                    info.durationText?.let { Text("Length: $it") }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    XiroPrimaryButton(onClick = onDismiss) { Text("OK") }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("OK") }
         }
-    )
+    }
+}
+
+@Composable
+private fun PastFlightReplayDialog(
+    summary: HjFlightSummary,
+    measurementUnit: MeasurementUnit,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val localLibraryManager = remember { LocalLibraryManager(context) }
+    val offlineMapManager = remember { OfflineMapManager(context, localLibraryManager) }
+    val activeOfflineMap = remember(summary.id) { offlineMapManager.activeMapFile() }
+    val parsedLogResult = androidx.compose.runtime.produceState<Result<HjFlightLog>?>(initialValue = null, summary.file.absolutePath) {
+        value = runCatching {
+            withContext(Dispatchers.IO) {
+                HjFlightLogParser.parse(summary.file) ?: error("Unable to parse ${summary.fileName}")
+            }
+        }
+    }.value
+    val parsedLog = parsedLogResult?.getOrNull()
+    val parseError = parsedLogResult?.exceptionOrNull()?.message
+    var playbackIndex by remember(summary.id) { mutableIntStateOf(0) }
+    var isPlaying by remember(summary.id) { mutableStateOf(false) }
+
+    LaunchedEffect(summary.id) {
+        playbackIndex = 0
+        isPlaying = false
+    }
+
+    LaunchedEffect(isPlaying, playbackIndex, parsedLog?.playbackSamples?.size) {
+        val samples = parsedLog?.playbackSamples ?: return@LaunchedEffect
+        if (!isPlaying) return@LaunchedEffect
+        if (playbackIndex >= samples.lastIndex) {
+            isPlaying = false
+            return@LaunchedEffect
+        }
+        delay(HjFlightLogParser.playbackDelayMs(samples, playbackIndex))
+        playbackIndex += 1
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xCC000000))
+                .padding(16.dp)
+        ) {
+            XiroRaisedCard(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = XiroDesignTokens.Surface,
+                shape = RoundedCornerShape(32.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                            IconButton(onClick = onDismiss) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                    contentDescription = "Back",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                        Text(
+                            text = summary.fileName,
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleLarge,
+                            color = XiroDesignTokens.TextPrimary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    when {
+                        parsedLogResult == null -> {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(color = XiroDesignTokens.AccentBright)
+                                Text("Parsing HJ flight log...", color = XiroDesignTokens.TextSecondary)
+                            }
+                        }
+
+                        parsedLog == null -> {
+                            Text(parseError ?: "Unable to parse this HJ flight log.", color = XiroDesignTokens.TextSecondary)
+                        }
+
+                        parsedLog.playbackSamples.isEmpty() -> {
+                            Text("This HJ file did not contain playable telemetry samples.", color = XiroDesignTokens.TextSecondary)
+                        }
+
+                        else -> {
+                            val samples = parsedLog.playbackSamples
+                            val safeIndex = playbackIndex.coerceIn(0, samples.lastIndex)
+                            val currentSample = samples[safeIndex]
+                            val replayPath = samples
+                                .mapNotNull { it.position }
+                                .distinctBy { point ->
+                                    "${"%.6f".format(Locale.US, point.latitude)}:${"%.6f".format(Locale.US, point.longitude)}"
+                                }
+                            val homePosition = samples.firstOrNull { sample ->
+                                sample.position != null && (sample.satellites ?: 0) > 0
+                            }?.position
+                            val scrollState = rememberScrollState()
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(scrollState),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                XiroRaisedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), containerColor = XiroDesignTokens.SurfaceInset) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text("Playback", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+                                        Text(
+                                            listOfNotNull(
+                                                currentSample.timestampText.takeIf { it != "Unknown" },
+                                                currentSample.elapsedMsFromStart?.let(::formatDurationMillis),
+                                                "${safeIndex + 1} / ${samples.size}"
+                                            ).joinToString("  |  "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = XiroDesignTokens.TextSecondary
+                                        )
+                                        if (samples.size > 1) {
+                                            Slider(
+                                                value = safeIndex.toFloat(),
+                                                onValueChange = {
+                                                    isPlaying = false
+                                                    playbackIndex = it.roundToInt().coerceIn(0, samples.lastIndex)
+                                                },
+                                                valueRange = 0f..samples.lastIndex.toFloat()
+                                            )
+                                        }
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            XiroPrimaryButton(
+                                                onClick = {
+                                                    if (safeIndex >= samples.lastIndex) {
+                                                        playbackIndex = 0
+                                                    }
+                                                    isPlaying = !isPlaying
+                                                }
+                                            ) {
+                                                Text(if (isPlaying) "Pause" else "Play")
+                                            }
+                                        }
+                                    }
+                                }
+
+                                XiroRaisedCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(22.dp),
+                                    containerColor = XiroDesignTokens.SurfaceInset
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text("Flight Map", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(250.dp)
+                                                .clip(RoundedCornerShape(20.dp))
+                                        ) {
+                                            OfflineFlightMapSurface(
+                                                modifier = Modifier.fillMaxSize(),
+                                                activeMap = activeOfflineMap,
+                                                dronePosition = currentSample.position,
+                                                phonePosition = null,
+                                                homePosition = homePosition,
+                                                distanceLabel = formatFlightDistance(currentSample.distanceFromHomeMeters, measurementUnit),
+                                                elevationLabel = formatFlightAltitude(currentSample.baroHeightMeters, measurementUnit),
+                                                activeMapLabel = activeOfflineMap?.displayName ?: "Offline map",
+                                                expanded = true,
+                                                onSwapRequested = {},
+                                                tapToSwapEnabled = false,
+                                                onRequestLocationPermission = {},
+                                                phoneLocationPermissionGranted = true,
+                                                flightPath = replayPath,
+                                                expandedHintText = null,
+                                                showLocationPermissionPrompt = false
+                                            )
+                                        }
+                                        if (activeOfflineMap == null) {
+                                            Text(
+                                                "Import an offline .map region in Settings > Offline Maps to visualize the saved route.",
+                                                color = XiroDesignTokens.TextSecondary,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        } else {
+                                            Text(
+                                                "The green route shows the saved breadcrumb path, with the current replay point highlighted on the map.",
+                                                color = XiroDesignTokens.TextSecondary,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+
+                                XiroRaisedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), containerColor = XiroDesignTokens.SurfaceInset) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("Flight Summary", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+                                        FlightLogDetailRow("Started", parsedLog.summary.startTimestampText)
+                                        FlightLogDetailRow("Duration", parsedLog.summary.durationMs?.let(::formatDurationMillis) ?: "Unknown")
+                                        FlightLogDetailRow("Records", parsedLog.summary.recordCount.toString())
+                                        FlightLogDetailRow("Playback Points", samples.size.toString())
+                                        FlightLogDetailRow("File Size", humanReadableBytes(parsedLog.summary.fileSizeBytes))
+                                        FlightLogDetailRow("Max GPS Sat", parsedLog.maxSatellites?.toString() ?: "--")
+                                        FlightLogDetailRow("Min Aircraft Power", parsedLog.minAircraftPowerPercent?.let { "$it%" } ?: "--")
+                                        FlightLogDetailRow("Max Distance", formatFlightDistance(parsedLog.maxDistanceMeters, measurementUnit))
+                                        FlightLogDetailRow("Max Speed", formatFlightSpeed(parsedLog.maxSpeedMetersPerSecond, measurementUnit))
+                                    }
+                                }
+
+                                XiroRaisedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), containerColor = XiroDesignTokens.SurfaceInset) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text("Current Telemetry", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+                                        FlightLogDetailRow("Time", currentSample.timestampText)
+                                        FlightLogDetailRow("Flight Mode", currentSample.flightModeText ?: "--")
+                                        FlightLogDetailRow("GPS Sat", currentSample.satellites?.toString() ?: "--")
+                                        FlightLogDetailRow("Baro HGT", formatFlightAltitude(currentSample.baroHeightMeters, measurementUnit))
+                                        FlightLogDetailRow("Target HGT", formatFlightAltitude(currentSample.targetHeightMeters, measurementUnit))
+                                        FlightLogDetailRow("Speed", formatFlightSpeed(currentSample.speedMetersPerSecond, measurementUnit))
+                                        FlightLogDetailRow("Distance", formatFlightDistance(currentSample.distanceFromHomeMeters, measurementUnit))
+                                        FlightLogDetailRow("Aircraft Power", formatFlightPower(currentSample.aircraftPowerPercentExact))
+                                        FlightLogDetailRow("Voltage", formatFlightVoltage(currentSample.voltageVolts))
+                                        FlightLogDetailRow("Gear", currentSample.gearSelection?.toString() ?: "--")
+                                        FlightLogDetailRow("Switch State", currentSample.switchControlState?.toString() ?: "--")
+                                        FlightLogDetailRow("Latitude", currentSample.position?.latitude?.let { String.format(Locale.US, "%.6f", it) } ?: "--")
+                                        FlightLogDetailRow("Longitude", currentSample.position?.longitude?.let { String.format(Locale.US, "%.6f", it) } ?: "--")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlightLogDetailRow(
+    label: String,
+    value: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = XiroDesignTokens.TextSecondary)
+        Text(value, style = MaterialTheme.typography.bodyMedium, color = XiroDesignTokens.TextPrimary)
+    }
 }
 
 
@@ -3659,6 +4881,22 @@ private fun loadBitmapFromUrls(urls: List<String>): android.graphics.Bitmap? {
         if (bitmap != null) return bitmap
     }
     return null
+}
+
+private fun loadRemoteCameraThumbnail(item: CameraMediaItem, localLibraryManager: LocalLibraryManager): android.graphics.Bitmap? {
+    localLibraryManager.loadCachedPreviewBitmap(item)?.let { return it }
+    val previewUrls = item.previewUrls.ifEmpty { listOfNotNull(item.previewUrl) }
+    val bitmap = when (item.kind) {
+        MediaKind.PHOTO -> loadBitmapFromUrls(previewUrls)
+        MediaKind.VIDEO -> {
+            loadBitmapFromUrls(previewUrls)
+                ?: loadVideoFrameFromUrl(item.downloadUrl)
+        }
+    }
+    if (bitmap != null) {
+        localLibraryManager.cacheRemotePreviewBitmap(item, bitmap)
+    }
+    return bitmap
 }
 
 private fun loadBitmapFromUrl(url: String): android.graphics.Bitmap? {
@@ -3674,6 +4912,21 @@ private fun loadBitmapFromUrl(url: String): android.graphics.Bitmap? {
                 val bytes = response.body?.bytes() ?: return null
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun loadVideoFrameFromUrl(url: String): android.graphics.Bitmap? {
+    return try {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(url, mapOf("User-Agent" to "XIRO-Lite-Beta"))
+            retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+        } finally {
+            retriever.release()
+        }
     } catch (_: Exception) {
         null
     }
@@ -3863,6 +5116,31 @@ private fun humanReadableBytes(size: Long?): String {
     if (mb < 1024.0) return String.format(Locale.US, "%.1f MB", mb)
     val gb = mb / 1024.0
     return String.format(Locale.US, "%.2f GB", gb)
+}
+
+private fun formatFlightDistance(distanceMeters: Double?, measurementUnit: MeasurementUnit): String {
+    if (distanceMeters == null) return "--"
+    return formatDistanceForUnit(distanceMeters, measurementUnit)
+}
+
+private fun formatFlightSpeed(speedMetersPerSecond: Double?, measurementUnit: MeasurementUnit): String {
+    if (speedMetersPerSecond == null) return "--"
+    return formatSpeedForUnit(speedMetersPerSecond, measurementUnit)
+}
+
+private fun formatFlightVoltage(voltageVolts: Double?): String {
+    if (voltageVolts == null) return "--"
+    return String.format(Locale.US, "%.2f V", voltageVolts)
+}
+
+private fun formatFlightPower(powerPercentExact: Double?): String {
+    if (powerPercentExact == null) return "--"
+    return String.format(Locale.US, "%.0f%%", powerPercentExact)
+}
+
+private fun formatFlightAltitude(altitudeMeters: Double?, measurementUnit: MeasurementUnit): String {
+    if (altitudeMeters == null) return "--"
+    return formatAltitudeForUnit(altitudeMeters, measurementUnit)
 }
 
 private fun formatLibraryTimestamp(timestampMs: Long): String {

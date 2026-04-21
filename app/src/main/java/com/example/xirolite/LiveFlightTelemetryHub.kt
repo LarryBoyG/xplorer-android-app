@@ -90,6 +90,9 @@ object LiveFlightTelemetryHub {
 
     private fun updateDerivedTelemetry(packet: RemoteTelemetryPacket) {
         val snapshot = LegacyTelemetryDecoder.decode(packet) ?: return
+        val decodedAltitude = snapshot.baroHeightMeters
+            ?: snapshot.altitudeMeters
+            ?: _derivedTelemetry.value.altitudeMeters
         val satellites = snapshot.satellites ?: 0
         val position = snapshot.position
 
@@ -110,14 +113,14 @@ object LiveFlightTelemetryHub {
                 latestCoordinate = position,
                 speedMetersPerSecond = computeGroundSpeedMetersPerSecond(),
                 distanceFromHomeMeters = distanceFromHome,
-                altitudeMeters = snapshot.altitudeMeters
+                altitudeMeters = decodedAltitude
             )
             return
         }
 
         _derivedTelemetry.value = _derivedTelemetry.value.copy(
             speedMetersPerSecond = null,
-            altitudeMeters = snapshot.altitudeMeters,
+            altitudeMeters = decodedAltitude,
             distanceFromHomeMeters = homeCoordinate?.let { home ->
                 position?.let { current -> haversineMeters(home, current) }
             }

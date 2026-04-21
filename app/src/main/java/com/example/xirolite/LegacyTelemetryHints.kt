@@ -23,6 +23,8 @@ object LegacyTelemetryHints {
         54 to "Gear Candidate",
         57 to "Navigation Window",
         59 to "Switch / Control State",
+        33 to "Altitude (Lo)",
+        34 to "Altitude (Hi)",
         69 to "Voltage (Lo)",
         70 to "Voltage (Hi)",
         79 to "Power Window (Legacy Guess)",
@@ -44,6 +46,8 @@ object LegacyTelemetryHints {
         54 to "Best current dedicated flight-gear lead. XIRO Lite now prefers this byte for the 1/2/3 Gear HUD when it stays stable.",
         57 to "Navigation-state window candidate. Useful for GPS and return-home comparisons.",
         59 to "Raw control-state lead. Useful for debugging mode transitions, but noisy enough that it should not be shown directly as Gear.",
+        33 to "Low byte of the altitude candidate (u16 @ 33 / 10.0).",
+        34 to "High byte of the altitude candidate (u16 @ 33 / 10.0).",
         69 to "Low byte of the validated displayed voltage pair.",
         70 to "High byte of the validated displayed voltage pair.",
         79 to "Older power-window guess kept for comparison with earlier probe logs.",
@@ -60,6 +64,7 @@ object LegacyTelemetryHints {
         46 to "Control Step Pair",
         51 to "Drone Power %",
         57 to "Navigation Pair",
+        33 to "Altitude",
         69 to "Drone Voltage",
         79 to "Power Pair (Legacy Guess)",
         86 to "Tail / Error Pair"
@@ -72,6 +77,7 @@ object LegacyTelemetryHints {
         46 to "Control-step pair candidate. Useful when only the remote switch changes.",
         51 to "High-confidence legacy drone power pair. XIRO Assistant power matched u16 / 256 exactly in the filled HJ checkpoints.",
         57 to "Navigation-state pair candidate. Useful for GPS and turn-back comparisons.",
+        33 to "Altitude candidate from u16 @ 33 / 10.0 meters. Recovered from legacy HJ analysis.",
         69 to "High-confidence legacy displayed voltage pair. XIRO Assistant voltage matched u16 / 204.8 exactly in the filled HJ checkpoints.",
         79 to "Older power-pair guess kept for comparison with earlier probe logs.",
         86 to "Low-confidence turn-back / error-state pair candidate."
@@ -140,6 +146,20 @@ object LegacyTelemetryHints {
                 }
             ),
             TelemetryFieldCandidate(
+                label = "ZDDroneState.height / Baro HGT",
+                value = snapshot?.baroHeightMeters?.let { "${it.format(1)} m  (raw ${packet?.rawU16le(47)})" }
+                    ?: "Waiting for UDP 6800",
+                confidence = if (snapshot?.baroHeightMeters != null) "high" else "tracking",
+                source = "Baro HGT recovered from u16@47 / 10.0 based on HJ-compatible log analysis."
+            ),
+            TelemetryFieldCandidate(
+                label = "ZDDroneState.targetHeight / Target HGT",
+                value = snapshot?.targetHeightMeters?.let { "${it.format(1)} m  (raw ${packet?.rawU16le(83)})" }
+                    ?: "Waiting for UDP 6800",
+                confidence = if (snapshot?.targetHeightMeters != null) "high" else "tracking",
+                source = "Target HGT recovered from u16@83 / 10.0 based on HJ-compatible log analysis."
+            ),
+            TelemetryFieldCandidate(
                 label = "ZDDroneState.power",
                 value = snapshot?.droneBatteryPercentExact?.let { "${it.format(2)}%  (raw ${packet?.rawU16le(51)})" }
                     ?: "Waiting for UDP 6800",
@@ -194,6 +214,24 @@ object LegacyTelemetryHints {
     ): List<LegacyTelemetryTarget> {
         val snapshot = LegacyTelemetryDecoder.decode(latestRemotePacket)
         return listOf(
+            LegacyTelemetryTarget(
+                fieldName = "ZDDroneState.height / Baro HGT",
+                description = "Barometric height field recovered from HJ analysis. Units are in meters.",
+                confidence = if (snapshot?.baroHeightMeters != null) "high" else "tracking",
+                currentLeads = listOfNotNull(
+                    latestRemotePacket?.rawU16le(47)?.let { "u16@47 = $it" },
+                    snapshot?.baroHeightMeters?.let { "u16@47 / 10.0 = ${it.format(1)} m" }
+                ).ifEmpty { listOf("No live UDP packet available.") }
+            ),
+            LegacyTelemetryTarget(
+                fieldName = "ZDDroneState.targetHeight / Target HGT",
+                description = "Target height field recovered from HJ analysis. Units are in meters.",
+                confidence = if (snapshot?.targetHeightMeters != null) "high" else "tracking",
+                currentLeads = listOfNotNull(
+                    latestRemotePacket?.rawU16le(83)?.let { "u16@83 = $it" },
+                    snapshot?.targetHeightMeters?.let { "u16@83 / 10.0 = ${it.format(1)} m" }
+                ).ifEmpty { listOf("No live UDP packet available.") }
+            ),
             LegacyTelemetryTarget(
                 fieldName = "ZDDroneState.power",
                 description = "Legacy drone battery field recovered from HJ and validated against XIRO Assistant.",

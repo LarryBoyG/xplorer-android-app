@@ -61,6 +61,11 @@ data class RemoteTelemetryPacket(
         return lo or (hi shl 8)
     }
 
+    fun rawS16le(startIndex: Int): Int? {
+        val u16 = rawU16le(startIndex) ?: return null
+        return if (u16 >= 0x8000) u16 - 0x10000 else u16
+    }
+
     fun rawF32le(startIndex: Int): Float? {
         if (startIndex < 0 || startIndex + 3 >= rawData.size) return null
         return runCatching {

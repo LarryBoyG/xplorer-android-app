@@ -23,7 +23,8 @@ data class DerivedFlightTelemetry(
 )
 
 data class DroneStateUi(
-    val heightText: String = "--",
+    val baroHeightText: String = "--",
+    val targetHeightText: String = "--",
     val speedText: String = "--",
     val distanceText: String = "--",
     val voltageText: String = "--",

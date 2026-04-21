@@ -179,7 +179,7 @@ class TelemetryProbe {
         return Telemetry3014Summary(pairs)
     }
 
-    private fun httpGet(host: String, query: String, label: String): TelemetryResult {
+    fun httpGet(host: String, query: String, label: String): TelemetryResult {
         val urlString = "http://$host/?custom=1&$query"
 
         return try {

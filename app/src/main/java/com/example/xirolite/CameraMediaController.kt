@@ -355,7 +355,7 @@ class CameraMediaController(
         }
         val previewUrls = when (kind) {
             MediaKind.PHOTO -> buildPhotoPreviewCandidates(host, sanitizedRaw, normalizedPath)
-            MediaKind.VIDEO -> emptyList()
+            MediaKind.VIDEO -> buildVideoPreviewCandidates(host, sanitizedRaw)
         }
         return CameraMediaItem(
             name = name.substringAfterLast('/'),
@@ -395,6 +395,31 @@ class CameraMediaController(
                 if (candidateHost == host) {
                     add(downloadUrl)
                 }
+            }
+        }.distinct()
+    }
+
+    private fun buildVideoPreviewCandidates(host: String, rawName: String): List<String> {
+        val pathOnly = when {
+            rawName.startsWith("http://") || rawName.startsWith("https://") ->
+                rawName.substringAfter("://").substringAfter('/', "").let {
+                    if (it.isBlank()) "/DCIM/MOVIE/${rawName.substringAfterLast('/')}" else "/$it"
+                }
+            rawName.startsWith("/") -> rawName
+            rawName.contains("DCIM/") -> "/${rawName.trimStart('/')}"
+            else -> "/DCIM/MOVIE/${rawName.substringAfterLast('/')}"
+        }
+        val fileName = pathOnly.substringAfterLast('/')
+        val encodedPath = URLEncoder.encode(pathOnly, "UTF-8")
+        val encodedFileName = URLEncoder.encode(fileName, "UTF-8")
+        val hosts = linkedSetOf(host, "192.168.1.21", "192.168.1.254", "192.168.1.1")
+
+        return buildList {
+            hosts.forEach { candidateHost ->
+                add("http://$candidateHost/cgiget/screennail?filename=$encodedPath")
+                add("http://$candidateHost/cgiget/screennail?filename=$encodedFileName")
+                add("http://$candidateHost/cgiget/thumbnail?filename=$encodedPath")
+                add("http://$candidateHost/cgiget/thumbnail?filename=$encodedFileName")
             }
         }.distinct()
     }

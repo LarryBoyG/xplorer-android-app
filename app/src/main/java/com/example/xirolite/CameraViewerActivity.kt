@@ -1,12 +1,15 @@
 package com.example.xirolite
 
+import android.Manifest
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -18,30 +21,31 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -85,29 +89,16 @@ class CameraViewerActivity : ComponentActivity() {
         val host = intent.getStringExtra(EXTRA_HOST).orEmpty().ifBlank { "192.168.1.254" }
         val profile = LegacyCompatibilityCatalog.byId(intent.getStringExtra(EXTRA_PROFILE_ID))
         val selectedHudItems = intent.getStringArrayListExtra(EXTRA_HUD_ITEMS)?.toSet()
-            ?: getSharedPreferences("xiro_lite_ui", MODE_PRIVATE)
+            ?: getSharedPreferences(UI_PREFS_NAME, MODE_PRIVATE)
                 .getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
                 ?.toSet()
             ?: DEFAULT_LIVE_VIEW_HUD_ITEMS
         setContent {
-            val xiroGreen = Color(0xFF6BD224)
-            val scheme = darkColorScheme(
-                primary = xiroGreen,
-                secondary = xiroGreen,
-                tertiary = xiroGreen,
-                background = Color(0xFF2B2F39),
-                surface = Color(0xFF3A3F4A),
-                surfaceVariant = Color(0xFF252A31),
-                onPrimary = Color.Black,
-                onBackground = Color(0xFFF2F4F7),
-                onSurface = Color(0xFFF2F4F7),
-                onSurfaceVariant = Color(0xFFE9EDF2)
-            )
-            MaterialTheme(colorScheme = scheme) {
+            MaterialTheme(colorScheme = xiroColorScheme()) {
                 CameraViewerScreen(
                     host = host,
                     profile = profile,
-                    selectedHudItems = selectedHudItems,
+                    selectedHudItems = normalizeHudSelection(selectedHudItems),
                     onExit = { finish() }
                 )
             }
@@ -134,6 +125,7 @@ private fun CameraViewerScreen(
     val context = LocalContext.current
     val detector = remember { DroneNetworkDetector(context) }
     val localLibraryManager = remember { LocalLibraryManager(context) }
+    val offlineMapManager = remember { OfflineMapManager(context, localLibraryManager) }
     val hjLogRecorder = remember { HjLogRecorder(localLibraryManager) }
     val exportHelper = remember { ExportHelper(context) }
     val captureFeedback = remember { CaptureFeedback(context) }
@@ -147,6 +139,19 @@ private fun CameraViewerScreen(
     val telemetryProbe = remember { TelemetryProbe() }
     val liveTelemetryPackets by LiveFlightTelemetryHub.recentPackets.collectAsState()
     val derivedFlightTelemetry by LiveFlightTelemetryHub.derivedTelemetry.collectAsState()
+    val uiPrefs = remember { context.getSharedPreferences(UI_PREFS_NAME, android.content.Context.MODE_PRIVATE) }
+    val measurementUnit = remember {
+        MeasurementUnit.fromStored(uiPrefs.getString(MEASUREMENT_UNIT_PREF_KEY, null))
+    }
+    var activeOfflineMap by remember { mutableStateOf(offlineMapManager.activeMapFile()) }
+    var mapExpanded by remember { mutableStateOf(false) }
+    var phoneLocationPermissionGranted by remember { mutableStateOf(hasPhoneLocationPermission(context)) }
+    val requestPhoneLocationPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        phoneLocationPermissionGranted = result.values.any { it }
+    }
+    val phoneFlightCoordinate by rememberPhoneFlightCoordinate(phoneLocationPermissionGranted)
     var hjLogStatus by remember { mutableStateOf("Idle") }
     var relayProbeResults by remember { mutableStateOf(listOf<CommandResult>()) }
     var last3014Result by remember { mutableStateOf<TelemetryResult?>(null) }
@@ -157,7 +162,8 @@ private fun CameraViewerScreen(
         recentRemotePackets = liveTelemetryPackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
         relayProbeResults = relayProbeResults,
-        flightLogStatusText = hjLogStatus
+        flightLogStatusText = hjLogStatus,
+        measurementUnit = measurementUnit
     )
     val viewerHudItems = viewerUiState.preflight.filter { it.label in selectedHudItems }
 
@@ -166,6 +172,7 @@ private fun CameraViewerScreen(
     var recordingStartedAtMs by remember { mutableLongStateOf(0L) }
     var recordingElapsedMs by remember { mutableLongStateOf(0L) }
     var streamProfile by remember(profile.id) { mutableStateOf(StreamProfile.AUTO) }
+    var viewerSettingsMenuExpanded by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableIntStateOf(0) }
     var playerActive by remember { mutableStateOf(true) }
     var recoveryMessage by remember { mutableStateOf<String?>(null) }
@@ -178,15 +185,20 @@ private fun CameraViewerScreen(
     var lastLoggedPacketTimestamp by remember { mutableLongStateOf(0L) }
     var recoveryFrameBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var autoRecoveryPending by remember { mutableStateOf(false) }
+    var commandTransitionOverlayActive by remember { mutableStateOf(false) }
     var autoRecoveryMessageToken by remember { mutableIntStateOf(0) }
     var lastRecoveryWasPreemptive by remember { mutableStateOf(false) }
 
     val logs = remember { mutableStateListOf<String>() }
-    val uiPrefs = remember { context.getSharedPreferences("xiro_lite_ui", android.content.Context.MODE_PRIVATE) }
     val debugModeEnabled = uiPrefs.getBoolean("debug_mode_enabled", false)
     val supportsStabilityToggle = profile.id == LegacyCompatibilityCatalog.xplorer.id
     val viewerWarnings = buildList {
-        addAll(BetaInference.buildFlightWarnings(liveTelemetryPackets))
+        addAll(
+            BetaInference.buildFlightWarnings(
+                recentRemotePackets = liveTelemetryPackets,
+                measurementUnit = measurementUnit
+            )
+        )
         if (autoRecoveryPending && !lastRecoveryWasPreemptive && recoveryMessage != null) {
             add(
                 FlightWarning(
@@ -221,6 +233,15 @@ private fun CameraViewerScreen(
         recoveryFrameBitmap = null
         recoveryMessage = null
         lastRecoveryWasPreemptive = false
+        log(reason)
+    }
+
+    fun clearCommandTransitionOverlay(reason: String) {
+        if (!commandTransitionOverlayActive) return
+        commandTransitionOverlayActive = false
+        if (!autoRecoveryPending) {
+            recoveryFrameBitmap = null
+        }
         log(reason)
     }
 
@@ -359,6 +380,8 @@ private fun CameraViewerScreen(
 
     suspend fun cycleRtspSessionForCommand(actionLabel: String, commandBlock: suspend () -> Unit) {
         log("$actionLabel: stopping RTSP session before camera command")
+        recoveryFrameBitmap = rtspController.captureFrame()?.copy(Bitmap.Config.ARGB_8888, false)
+        commandTransitionOverlayActive = recoveryFrameBitmap != null
         playerActive = false
         delay(450)
         commandBlock()
@@ -474,7 +497,9 @@ private fun CameraViewerScreen(
                             refreshLibraryAfterRecovery = false
                         )
                         restoreVideoModeAfterPhoto()
-                        showTransientViewerMessage("Photo command sent")
+                        showTransientViewerMessage(
+                            if (debugModeEnabled) "Photo command sent" else "Taking Picture"
+                        )
                     }
                 }
 
@@ -490,7 +515,9 @@ private fun CameraViewerScreen(
                             actionLabel = "Stop Video",
                             refreshLibraryAfterRecovery = true
                         )
-                        showTransientViewerMessage("Stop video command sent")
+                        showTransientViewerMessage(
+                            if (debugModeEnabled) "Stop video command sent" else "Stopping Record"
+                        )
                     }
                 }
 
@@ -502,10 +529,38 @@ private fun CameraViewerScreen(
                         captureFeedback.playRecordBeep()
                         if (op.success) startRecordingState()
                         log("Start video sent after temporarily stopping RTSP")
-                        showTransientViewerMessage("Start video command sent")
+                        showTransientViewerMessage(
+                            if (debugModeEnabled) "Start video command sent" else "Starting Record"
+                        )
                     }
                 }
             }
+        }
+    }
+
+    suspend fun switchViewerCaptureMode(targetMode: CaptureMode) {
+        if (captureMode == targetMode) return
+        if (actionObservationInProgress || isRecording) return
+        runObservedViewerAction(
+            if (targetMode == CaptureMode.VIDEO) "Switch To Video" else "Switch To Photo"
+        ) {
+            if (targetMode == CaptureMode.VIDEO) {
+                lastOperation = cameraMediaController.setMode(host, CaptureMode.VIDEO)
+            } else {
+                log("Switch to photo keeps the UI in PHOTO mode without sending 3001 par=0")
+            }
+            captureMode = targetMode
+            clearRecordingState()
+            log("Mode changed to ${captureMode.name}")
+            showTransientViewerMessage(
+                if (debugModeEnabled) {
+                    "Mode command sent"
+                } else if (targetMode == CaptureMode.VIDEO) {
+                    "Video Mode"
+                } else {
+                    "Photo Mode"
+                }
+            )
         }
     }
 
@@ -596,6 +651,21 @@ private fun CameraViewerScreen(
         }
     }
 
+    LaunchedEffect(Unit) {
+        activeOfflineMap = offlineMapManager.activeMapFile()
+    }
+
+    LaunchedEffect(activeOfflineMap?.fileName) {
+        if (activeOfflineMap != null && !phoneLocationPermissionGranted) {
+            requestPhoneLocationPermission.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
     LaunchedEffect(isRecording, recordingStartedAtMs) {
         if (!isRecording || recordingStartedAtMs <= 0L) {
             recordingElapsedMs = 0L
@@ -671,19 +741,89 @@ private fun CameraViewerScreen(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        if (playerActive) {
-            RtspPlayer(
-                url = rtspUrl,
+        val insetModifier = Modifier
+            .align(Alignment.BottomStart)
+            .padding(start = 18.dp, bottom = 20.dp)
+            .fillMaxWidth(0.19f)
+            .aspectRatio(1f)
+
+        if (mapExpanded) {
+            OfflineFlightMapSurface(
+                modifier = Modifier.fillMaxSize(),
+                activeMap = activeOfflineMap,
+                dronePosition = derivedFlightTelemetry.latestCoordinate,
+                phonePosition = phoneFlightCoordinate,
+                homePosition = derivedFlightTelemetry.homeCoordinate,
+                distanceLabel = derivedFlightTelemetry.distanceFromHomeMeters
+                    ?.let { formatDistanceForUnit(it, measurementUnit) }
+                    ?: "--",
+                elevationLabel = derivedFlightTelemetry.altitudeMeters
+                    ?.let { formatAltitudeForUnit(it, measurementUnit) }
+                    ?: "--",
+                activeMapLabel = activeOfflineMap?.displayName ?: "Offline Maps",
+                expanded = true,
+                onSwapRequested = { },
+                tapToSwapEnabled = false,
+                onRequestLocationPermission = {
+                    requestPhoneLocationPermission.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
+                },
+                phoneLocationPermissionGranted = phoneLocationPermissionGranted
+            )
+            CameraPreviewSurface(
+                modifier = insetModifier,
+                playerActive = playerActive,
+                rtspUrl = rtspUrl,
                 reloadToken = reloadToken,
                 streamProfile = streamProfile,
-                modifier = Modifier.fillMaxSize(),
-                controller = rtspController,
+                rtspController = rtspController,
+                recoveryFrameBitmap = recoveryFrameBitmap,
                 onFirstFrameRendered = {
+                    if (commandTransitionOverlayActive) {
+                        clearCommandTransitionOverlay("RTSP stream resumed after camera command")
+                    }
                     if (autoRecoveryPending) {
                         clearAutoRecoveryOverlay("RTSP stream resumed after automatic reload")
                     }
                 },
                 onPlaybackResumed = {
+                    if (commandTransitionOverlayActive) {
+                        clearCommandTransitionOverlay("RTSP playback resumed after camera command")
+                    }
+                    if (autoRecoveryPending) {
+                        clearAutoRecoveryOverlay("RTSP playback resumed after automatic reload")
+                    }
+                },
+                onRecoveryRequested = { reason -> handleAutomaticStreamRecovery(reason) },
+                onLog = ::log,
+                onSwapRequested = { mapExpanded = false },
+                overlayLabel = "Live"
+            )
+        } else {
+            CameraPreviewSurface(
+                modifier = Modifier.fillMaxSize(),
+                playerActive = playerActive,
+                rtspUrl = rtspUrl,
+                reloadToken = reloadToken,
+                streamProfile = streamProfile,
+                rtspController = rtspController,
+                recoveryFrameBitmap = recoveryFrameBitmap,
+                onFirstFrameRendered = {
+                    if (commandTransitionOverlayActive) {
+                        clearCommandTransitionOverlay("RTSP stream resumed after camera command")
+                    }
+                    if (autoRecoveryPending) {
+                        clearAutoRecoveryOverlay("RTSP stream resumed after automatic reload")
+                    }
+                },
+                onPlaybackResumed = {
+                    if (commandTransitionOverlayActive) {
+                        clearCommandTransitionOverlay("RTSP playback resumed after camera command")
+                    }
                     if (autoRecoveryPending) {
                         clearAutoRecoveryOverlay("RTSP playback resumed after automatic reload")
                     }
@@ -691,14 +831,31 @@ private fun CameraViewerScreen(
                 onRecoveryRequested = { reason -> handleAutomaticStreamRecovery(reason) },
                 onLog = ::log
             )
-        }
-
-        recoveryFrameBitmap?.let { bitmap ->
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+            OfflineFlightMapSurface(
+                modifier = insetModifier,
+                activeMap = activeOfflineMap,
+                dronePosition = derivedFlightTelemetry.latestCoordinate,
+                phonePosition = phoneFlightCoordinate,
+                homePosition = derivedFlightTelemetry.homeCoordinate,
+                distanceLabel = derivedFlightTelemetry.distanceFromHomeMeters
+                    ?.let { formatDistanceForUnit(it, measurementUnit) }
+                    ?: "--",
+                elevationLabel = derivedFlightTelemetry.altitudeMeters
+                    ?.let { formatAltitudeForUnit(it, measurementUnit) }
+                    ?: "--",
+                activeMapLabel = activeOfflineMap?.displayName ?: "Offline Maps",
+                expanded = false,
+                onSwapRequested = { mapExpanded = activeOfflineMap != null },
+                tapToSwapEnabled = true,
+                onRequestLocationPermission = {
+                    requestPhoneLocationPermission.launch(
+                        arrayOf(
+                            Manifest.permission.ACCESS_FINE_LOCATION,
+                            Manifest.permission.ACCESS_COARSE_LOCATION
+                        )
+                    )
+                },
+                phoneLocationPermissionGranted = phoneLocationPermissionGranted
             )
         }
 
@@ -710,16 +867,16 @@ private fun CameraViewerScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.Top
         ) {
-            IconButton(
-                onClick = { scope.launch { requestViewerExit() } },
-                modifier = Modifier
-                    .background(Color(0xB3252A31), RoundedCornerShape(16.dp))
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
-                )
+            XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                IconButton(
+                    onClick = { scope.launch { requestViewerExit() } }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                        contentDescription = "Back",
+                        tint = Color.White
+                    )
+                }
             }
 
             Row(
@@ -727,47 +884,70 @@ private fun CameraViewerScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        viewerHudItems.forEach { item ->
-                            ViewerHudPill(item = item)
-                        }
-                        if (supportsStabilityToggle) {
-                            Button(
-                                onClick = {
-                                    streamProfile = if (streamProfile == StreamProfile.STABILITY) {
-                                        StreamProfile.AUTO
-                                    } else {
-                                        StreamProfile.STABILITY
-                                    }
-                                    log("Live preview stream profile set to ${streamProfile.label}")
-                                },
-                                shape = RoundedCornerShape(18.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
+                val hudCompactLevel = when {
+                    viewerHudItems.size >= 7 -> 2
+                    viewerHudItems.size >= 5 -> 1
+                    else -> 0
+                }
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    viewerHudItems.forEach { item ->
+                        ViewerHudPill(item = item, compactLevel = hudCompactLevel)
+                    }
+                }
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    Box {
+                        XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                            IconButton(
+                                onClick = { viewerSettingsMenuExpanded = true }
                             ) {
-                                Text("Stream: ${streamProfile.label}")
+                                Icon(
+                                    imageVector = Icons.Outlined.Settings,
+                                    contentDescription = "Live View Settings",
+                                    tint = Color.White
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = viewerSettingsMenuExpanded,
+                            onDismissRequest = { viewerSettingsMenuExpanded = false }
+                        ) {
+                            if (supportsStabilityToggle) {
+                                DropdownMenuItem(
+                                    text = { Text("Stream: Auto") },
+                                    onClick = {
+                                        viewerSettingsMenuExpanded = false
+                                        streamProfile = StreamProfile.AUTO
+                                        log("Live preview stream profile set to ${streamProfile.label}")
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Stream: Stability") },
+                                    onClick = {
+                                        viewerSettingsMenuExpanded = false
+                                        streamProfile = StreamProfile.STABILITY
+                                        log("Live preview stream profile set to ${streamProfile.label}")
+                                    }
+                                )
+                            } else {
+                                DropdownMenuItem(
+                                    text = { Text("No camera settings yet") },
+                                    onClick = { viewerSettingsMenuExpanded = false }
+                                )
                             }
                         }
                     }
-                }
-                if (debugModeEnabled) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.End
-                    ) {
-                        Button(
-                            onClick = { exportDebugLog() },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
-                        ) { Text("Export Debug Log") }
-                        Button(
-                            onClick = { debugExpanded = !debugExpanded },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xB3252A31), contentColor = Color.White)
-                        ) { Text(if (debugExpanded) "Debug ^" else "Debug v") }
+                    if (debugModeEnabled) {
+                        XiroSecondaryButton(onClick = { exportDebugLog() }) { Text("Export Debug Log") }
+                        XiroSecondaryButton(onClick = { debugExpanded = !debugExpanded }) { Text(if (debugExpanded) "Debug ^" else "Debug v") }
                     }
                 }
             }
@@ -776,8 +956,9 @@ private fun CameraViewerScreen(
         if (viewerWarnings.isNotEmpty()) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 74.dp),
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 14.dp, vertical = 18.dp)
+                    .widthIn(max = 520.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -788,11 +969,11 @@ private fun CameraViewerScreen(
         }
 
         if (debugModeEnabled && actionExportStatus.isNotBlank()) {
-            Card(
+            XiroRaisedCard(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = if (viewerWarnings.isEmpty()) 72.dp else 150.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xCC1E242C))
+                    .padding(top = 72.dp),
+                containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
                 Text(
                     text = actionExportStatus,
@@ -803,11 +984,11 @@ private fun CameraViewerScreen(
         }
 
         recoveryMessage?.let {
-            Card(
+            XiroRaisedCard(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .padding(horizontal = 24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xCC1E242C))
+                containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
                 Text(
                     text = it,
@@ -821,12 +1002,21 @@ private fun CameraViewerScreen(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 22.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xA012151B)),
-                shape = RoundedCornerShape(20.dp)
+            XiroPillSurface(
+                modifier = Modifier
+                    .wrapContentWidth()
+                    .clickable(enabled = !actionObservationInProgress && !isRecording) {
+                        scope.launch {
+                            switchViewerCaptureMode(
+                                if (captureMode == CaptureMode.PHOTO) CaptureMode.VIDEO else CaptureMode.PHOTO
+                            )
+                        }
+                    },
+                shape = RoundedCornerShape(20.dp),
+                containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
                 Column(
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
@@ -855,32 +1045,6 @@ private fun CameraViewerScreen(
                     scope.launch { handlePrimaryCapturePress() }
                 }
             )
-
-            Button(
-                onClick = {
-                    scope.launch {
-                        runObservedViewerAction(
-                            if (captureMode == CaptureMode.PHOTO) "Switch To Video" else "Switch To Photo"
-                        ) {
-                            val targetMode = if (captureMode == CaptureMode.PHOTO) CaptureMode.VIDEO else CaptureMode.PHOTO
-                            if (targetMode == CaptureMode.VIDEO) {
-                                lastOperation = cameraMediaController.setMode(host, CaptureMode.VIDEO)
-                            } else {
-                                log("Switch to photo keeps the UI in PHOTO mode without sending 3001 par=0")
-                            }
-                            captureMode = targetMode
-                            clearRecordingState()
-                            log("Mode changed to ${captureMode.name}")
-                            showTransientViewerMessage("Mode command sent")
-                        }
-                    }
-                },
-                shape = RoundedCornerShape(18.dp),
-                enabled = !actionObservationInProgress && !isRecording,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC1E242C), contentColor = Color.White)
-            ) {
-                Text(if (captureMode == CaptureMode.PHOTO) "Switch to Video" else "Switch to Photo")
-            }
         }
 
         AnimatedVisibility(
@@ -889,9 +1053,10 @@ private fun CameraViewerScreen(
                 .align(Alignment.BottomStart)
                 .padding(start = 14.dp, bottom = 18.dp)
         ) {
-            Card(
+            XiroRaisedCard(
                 modifier = Modifier.fillMaxWidth(0.62f),
-                shape = RoundedCornerShape(20.dp)
+                shape = RoundedCornerShape(20.dp),
+                containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
                 Column(
                     modifier = Modifier
@@ -905,7 +1070,7 @@ private fun CameraViewerScreen(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("Debug Capture Tests", color = Color(0xFFF2F4F7))
                     Text("Use these to isolate which direct camera command drops the link.", color = Color(0xFFD7DCE3))
-                    Button(
+                    XiroSecondaryButton(
                         onClick = {
                             scope.launch {
                                 runDebugCaptureCommand(
@@ -914,11 +1079,9 @@ private fun CameraViewerScreen(
                                 )
                             }
                         },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC3A404B), contentColor = Color.White)
                     ) { Text("Photo Trigger Only (1001)") }
                     Text("Sends only the direct take-photo trigger without switching mode first.", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
-                    Button(
+                    XiroSecondaryButton(
                         onClick = {
                             scope.launch {
                                 runDebugCaptureCommand(
@@ -927,11 +1090,9 @@ private fun CameraViewerScreen(
                                 )
                             }
                         },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC3A404B), contentColor = Color.White)
                     ) { Text("Photo Mode Then Trigger (3001 -> 1001)") }
                     Text("Switches to photo mode first, waits briefly, then sends the photo trigger.", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
-                    Button(
+                    XiroSecondaryButton(
                         onClick = {
                             scope.launch {
                                 runDebugCaptureCommand(
@@ -940,11 +1101,9 @@ private fun CameraViewerScreen(
                                 )
                             }
                         },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC3A404B), contentColor = Color.White)
                     ) { Text("Video Start Only (2001 par=1)") }
                     Text("Sends only the direct video-start command with no extra prep sequence.", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
-                    Button(
+                    XiroSecondaryButton(
                         onClick = {
                             scope.launch {
                                 runDebugCaptureCommand(
@@ -953,8 +1112,6 @@ private fun CameraViewerScreen(
                                 )
                             }
                         },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xCC3A404B), contentColor = Color.White)
                     ) { Text("Video Stop Only (2001 par=0)") }
                     Text("Sends only the direct video-stop command to test stop behavior in isolation.", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
                     lastOperation?.let {
@@ -968,6 +1125,75 @@ private fun CameraViewerScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CameraPreviewSurface(
+    modifier: Modifier,
+    playerActive: Boolean,
+    rtspUrl: String,
+    reloadToken: Int,
+    streamProfile: StreamProfile,
+    rtspController: RtspPlayerController,
+    recoveryFrameBitmap: Bitmap?,
+    onFirstFrameRendered: () -> Unit,
+    onPlaybackResumed: () -> Unit,
+    onRecoveryRequested: (String) -> Unit,
+    onLog: (String) -> Unit,
+    onSwapRequested: (() -> Unit)? = null,
+    overlayLabel: String? = null
+) {
+    Box(
+        modifier = modifier
+            .let { base ->
+                if (onSwapRequested != null) {
+                    base.clickable(onClick = onSwapRequested)
+                } else {
+                    base
+                }
+            }
+            .background(Color.Black)
+    ) {
+        if (playerActive) {
+            RtspPlayer(
+                url = rtspUrl,
+                reloadToken = reloadToken,
+                streamProfile = streamProfile,
+                modifier = Modifier.fillMaxSize(),
+                controller = rtspController,
+                onFirstFrameRendered = onFirstFrameRendered,
+                onPlaybackResumed = onPlaybackResumed,
+                onRecoveryRequested = onRecoveryRequested,
+                onLog = onLog
+            )
+        }
+
+        recoveryFrameBitmap?.let { bitmap ->
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+
+        if (overlayLabel != null) {
+            XiroPillSurface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+                shape = RoundedCornerShape(14.dp),
+                containerColor = XiroDesignTokens.SurfaceOverlay
+            ) {
+                Text(
+                    text = overlayLabel,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = XiroDesignTokens.TextPrimary,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }
@@ -1054,23 +1280,43 @@ private fun formatRecordingDuration(elapsedMs: Long): String {
 }
 
 @Composable
-private fun ViewerHudPill(item: PreflightItem) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0x9912151B)),
-        shape = RoundedCornerShape(18.dp)
+private fun ViewerHudPill(item: PreflightItem, compactLevel: Int) {
+    val horizontalPadding = when (compactLevel) {
+        2 -> 8.dp
+        1 -> 10.dp
+        else -> 12.dp
+    }
+    val verticalPadding = when (compactLevel) {
+        2 -> 6.dp
+        1 -> 7.dp
+        else -> 8.dp
+    }
+    val labelStyle = when (compactLevel) {
+        2 -> MaterialTheme.typography.labelSmall
+        else -> MaterialTheme.typography.bodySmall
+    }
+    val valueStyle = when (compactLevel) {
+        2 -> MaterialTheme.typography.bodySmall
+        1 -> MaterialTheme.typography.bodyMedium
+        else -> MaterialTheme.typography.bodyLarge
+    }
+    val label = compactHudLabel(item.label, compactLevel)
+    XiroPillSurface(
+        shape = RoundedCornerShape(18.dp),
+        containerColor = XiroDesignTokens.SurfaceOverlay
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = horizontalPadding, vertical = verticalPadding),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (item.label == "Wi-Fi Signal") {
-                Text("Wi-Fi", color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
+                Text(label, color = Color(0xFFD7DCE3), style = labelStyle)
                 SignalStrengthBars(level = parseSignalStrengthVisual(item.value)?.level ?: 0)
             } else {
                 StatusDot(level = resolveStatusIndicatorLevel(item.label, item.value, item.ok), size = 8.dp)
-                Text(item.label, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
-                Text(item.value, color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(label, color = Color(0xFFD7DCE3), style = labelStyle)
+                Text(item.value, color = Color.White, fontWeight = FontWeight.SemiBold, style = valueStyle, maxLines = 1)
             }
         }
     }
@@ -1079,9 +1325,9 @@ private fun ViewerHudPill(item: PreflightItem) {
 @Composable
 private fun ViewerWarningBanner(warning: FlightWarning) {
     val containerColor = when (warning.severity) {
-        FlightWarningSeverity.INFO -> Color(0xCC274152)
-        FlightWarningSeverity.CAUTION -> Color(0xCC5C4300)
-        FlightWarningSeverity.CRITICAL -> Color(0xCC5C1F1F)
+        FlightWarningSeverity.INFO -> Color(0xFF2D4559)
+        FlightWarningSeverity.CAUTION -> Color(0xFF5B4A14)
+        FlightWarningSeverity.CRITICAL -> Color(0xFF5D2A2A)
     }
     val accentColor = when (warning.severity) {
         FlightWarningSeverity.INFO -> Color(0xFF64B5F6)
@@ -1089,9 +1335,10 @@ private fun ViewerWarningBanner(warning: FlightWarning) {
         FlightWarningSeverity.CRITICAL -> Color(0xFFFF6E6E)
     }
 
-    Card(
-        colors = CardDefaults.cardColors(containerColor = containerColor),
-        shape = RoundedCornerShape(18.dp)
+    XiroPillSurface(
+        modifier = Modifier.wrapContentWidth(),
+        shape = RoundedCornerShape(18.dp),
+        containerColor = containerColor
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -1103,11 +1350,29 @@ private fun ViewerWarningBanner(warning: FlightWarning) {
                     .size(10.dp)
                     .background(accentColor, CircleShape)
             )
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Column(
+                modifier = Modifier.widthIn(max = 360.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
                 Text(warning.title, color = Color.White)
                 Text(warning.detail, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+private fun compactHudLabel(label: String, compactLevel: Int): String {
+    if (compactLevel <= 0) return label
+    return when (label) {
+        "GPS Sat" -> "GPS"
+        "Aircraft Power" -> if (compactLevel >= 2) "Power" else label
+        "Flight Mode" -> "Mode"
+        "Elevation" -> "Elev"
+        "Target Elevation" -> if (compactLevel >= 2) "Target" else "Target Elev"
+        "SD Card" -> "SD"
+        "Camera" -> "Cam"
+        "Wi-Fi Signal" -> "Wi-Fi"
+        else -> label
     }
 }
 

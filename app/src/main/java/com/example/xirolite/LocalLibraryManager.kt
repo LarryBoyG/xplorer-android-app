@@ -2,6 +2,7 @@ package com.example.xirolite
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Environment
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +106,6 @@ class LocalLibraryManager(private val context: Context) {
         val previewByBase = previewFiles.associateBy { baseMediaName(it.name) }
         val hdByBase = hdFiles.associateBy { baseMediaName(it.name) }
         val allBaseNames = linkedSetOf<String>().apply {
-            addAll(previewByBase.keys)
             addAll(hdByBase.keys)
         }
 
@@ -115,8 +115,8 @@ class LocalLibraryManager(private val context: Context) {
             val remote = remoteByName.values.firstOrNull { baseMediaName(it.name) == base }
             val kind = when {
                 hdFile != null -> kindForName(hdFile.name)
-                previewFile != null -> kindForName(previewFile.name)
                 remote != null -> remote.kind
+                previewFile != null -> kindForName(previewFile.name)
                 else -> MediaKind.PHOTO
             }
             LocalLibraryItem(
@@ -131,6 +131,30 @@ class LocalLibraryManager(private val context: Context) {
                     ?: System.currentTimeMillis()
             )
         }.sortedByDescending { it.timestampMs }
+    }
+
+    fun loadCachedPreviewBitmap(item: CameraMediaItem): Bitmap? {
+        val file = cachedPreviewFile(item)
+        if (!file.exists() || file.length() <= 0L) return null
+        return BitmapFactory.decodeFile(file.absolutePath)
+    }
+
+    fun cacheRemotePreviewBitmap(item: CameraMediaItem, bitmap: Bitmap): File? {
+        return runCatching {
+            val outFile = cachedPreviewFile(item)
+            val tempFile = File(outFile.parentFile, outFile.name + ".part")
+            FileOutputStream(tempFile).use { out ->
+                if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)) {
+                    error("Failed to encode preview")
+                }
+            }
+            if (outFile.exists()) outFile.delete()
+            if (!tempFile.renameTo(outFile)) {
+                tempFile.delete()
+                error("Failed to store preview cache")
+            }
+            outFile
+        }.getOrNull()
     }
 
     suspend fun deleteLocalItem(item: LocalLibraryItem): Result<Unit> = withContext(Dispatchers.IO) {
@@ -275,10 +299,25 @@ class LocalLibraryManager(private val context: Context) {
     }
 
     private fun kindForName(name: String): MediaKind =
-        if (name.endsWith(".mov", true) || name.endsWith(".mp4", true) || name.endsWith(".avi", true)) MediaKind.VIDEO else MediaKind.PHOTO
+        when {
+            name.contains("__video.", true) -> MediaKind.VIDEO
+            name.endsWith(".mov", true) || name.endsWith(".mp4", true) || name.endsWith(".avi", true) -> MediaKind.VIDEO
+            else -> MediaKind.PHOTO
+        }
 
     private fun baseMediaName(name: String): String = name
         .substringAfterLast('/')
         .removePrefix("preview_")
+        .substringBefore("__video")
+        .substringBefore("__photo")
         .substringBeforeLast('.')
+
+    private fun cachedPreviewFile(item: CameraMediaItem): File {
+        val folders = ensureFolders()
+        val suffix = when (item.kind) {
+            MediaKind.PHOTO -> "__photo.jpg"
+            MediaKind.VIDEO -> "__video.jpg"
+        }
+        return File(folders.preview, "preview_${baseMediaName(item.name)}$suffix")
+    }
 }

@@ -1,13 +1,12 @@
 package com.example.xirolite
 
 import com.example.xirolite.data.CommandResult
-import kotlin.math.absoluteValue
-import kotlin.math.roundToInt
 
 object BetaInference {
     private const val LOW_POWER_WARNING_THRESHOLD = 20
     private const val CRITICAL_POWER_WARNING_THRESHOLD = 10
     private const val STABLE_NO_GPS_SAMPLE_COUNT = 3
+    private const val LEGAL_HEIGHT_LIMIT_METERS = 120.0
     private const val SD_CARD_PENDING_TEXT = "Pending camera decode"
     private const val FOV_PENDING_TEXT = "Pending camera callback"
 
@@ -18,7 +17,8 @@ object BetaInference {
         recentRemotePackets: List<RemoteTelemetryPacket>,
         derivedFlightTelemetry: DerivedFlightTelemetry,
         relayProbeResults: List<CommandResult>,
-        flightLogStatusText: String
+        flightLogStatusText: String,
+        measurementUnit: MeasurementUnit
     ): BetaUiState {
         val latestRemotePacket = recentRemotePackets.firstOrNull()
         val candidateFields = buildCandidates(latestRemotePacket, watch3014Summary)
@@ -31,10 +31,14 @@ object BetaInference {
             networkInfo = networkInfo,
             relayState = relayState,
             derivedFlightTelemetry = derivedFlightTelemetry,
-            flightLogStatusText = flightLogStatusText
+            flightLogStatusText = flightLogStatusText,
+            measurementUnit = measurementUnit
         )
         val preflight = buildPreflight(networkInfo, telemetryResults, latestRemotePacket, droneState)
-        val warnings = buildFlightWarnings(recentRemotePackets)
+        val warnings = buildFlightWarnings(
+            recentRemotePackets = recentRemotePackets,
+            measurementUnit = measurementUnit
+        )
         return BetaUiState(
             droneState = droneState,
             relayState = relayState,
@@ -45,7 +49,10 @@ object BetaInference {
         )
     }
 
-    fun buildFlightWarnings(recentRemotePackets: List<RemoteTelemetryPacket>): List<FlightWarning> {
+    fun buildFlightWarnings(
+        recentRemotePackets: List<RemoteTelemetryPacket>,
+        measurementUnit: MeasurementUnit = MeasurementUnit.METRIC
+    ): List<FlightWarning> {
         val snapshot = LegacyTelemetryDecoder.decode(recentRemotePackets)
         val warnings = mutableListOf<FlightWarning>()
 
@@ -78,6 +85,18 @@ object BetaInference {
             }
         }
 
+        snapshot?.baroHeightMeters
+            ?.takeIf { it > LEGAL_HEIGHT_LIMIT_METERS }
+            ?.let { heightMeters ->
+                val currentHeight = formatAltitudeForUnit(heightMeters, measurementUnit)
+                val legalLimit = formatAltitudeForUnit(LEGAL_HEIGHT_LIMIT_METERS, measurementUnit)
+                warnings += FlightWarning(
+                    title = "Over Legal Height Limit",
+                    detail = "Aircraft is at $currentHeight. Lower below $legalLimit.",
+                    severity = FlightWarningSeverity.CAUTION
+                )
+            }
+
         return warnings
     }
 
@@ -89,7 +108,8 @@ object BetaInference {
         networkInfo: DroneNetworkInfo,
         relayState: RelayStateUi,
         derivedFlightTelemetry: DerivedFlightTelemetry,
-        flightLogStatusText: String
+        flightLogStatusText: String,
+        measurementUnit: MeasurementUnit
     ): DroneStateUi {
         val packet = latestRemotePacket
         val summary = watch3014Summary
@@ -119,9 +139,22 @@ object BetaInference {
             else -> packet?.stateGuess?.label ?: "Unknown"
         }
 
-        val heightText = derivedFlightTelemetry.altitudeMeters?.let(::formatAltitudeText) ?: "--"
-        val speedText = derivedFlightTelemetry.speedMetersPerSecond?.let(::formatSpeedText) ?: "--"
-        val distanceText = derivedFlightTelemetry.distanceFromHomeMeters?.let(::formatDistanceText) ?: "--"
+        val baroHeightText = derivedFlightTelemetry.altitudeMeters
+            ?.let { formatAltitudeForUnit(it, measurementUnit) }
+            ?: legacySnapshot?.baroHeightMeters
+            ?.let { formatAltitudeForUnit(it, measurementUnit) }
+            ?: legacySnapshot?.altitudeMeters
+            ?.let { formatAltitudeForUnit(it, measurementUnit) }
+            ?: "--"
+        val targetHeightText = legacySnapshot?.targetHeightMeters
+            ?.let { formatAltitudeForUnit(it, measurementUnit) }
+            ?: "--"
+        val speedText = derivedFlightTelemetry.speedMetersPerSecond
+            ?.let { formatSpeedForUnit(it, measurementUnit) }
+            ?: "--"
+        val distanceText = derivedFlightTelemetry.distanceFromHomeMeters
+            ?.let { formatDistanceForUnit(it, measurementUnit) }
+            ?: "--"
 
         val cameraReady = telemetryResults.any { it.label == "CMD 3009" && it.status.startsWith("HTTP 200") }
         val sdCardSummary = telemetryResults.firstOrNull { it.label == "CMD 3014" }?.preview?.let { 
@@ -135,14 +168,16 @@ object BetaInference {
         val fovText = if (cameraReady) FOV_PENDING_TEXT else "--"
 
         return DroneStateUi(
-            heightText = heightText,
+            baroHeightText = baroHeightText,
+            targetHeightText = targetHeightText,
             speedText = speedText,
             distanceText = distanceText,
             voltageText = legacySnapshot?.droneVoltageVolts?.let { "${"%.2f".format(it)} V" } ?: "--",
             satelliteText = satCount,
             gpsText = gpsText,
             flightModeText = flightModeText,
-            droneBatteryText = LegacyTelemetryHints.droneBatteryHudText(packet),
+            droneBatteryText = legacySnapshot?.droneBatteryPercent?.let { "$it%" }
+                ?: LegacyTelemetryHints.droneBatteryHudText(packet),
             relaySignalText = buildWifiTelemetryText(networkInfo, relayState),
             sdCardText = sdCardText,
             remoteBatteryText = LegacyTelemetryHints.remoteBatteryHudText(packet),
@@ -197,8 +232,13 @@ object BetaInference {
                 ok = droneState.gearText != "--"
             ),
             PreflightItem(
-                label = "Altitude",
-                value = droneState.heightText,
+                label = "Elevation",
+                value = droneState.baroHeightText,
+                ok = true
+            ),
+            PreflightItem(
+                label = "Target Elevation",
+                value = droneState.targetHeightText,
                 ok = true
             ),
             PreflightItem(
@@ -277,26 +317,6 @@ object BetaInference {
             onExtender -> "Waiting for relay link"
             onCameraDirect -> "N/A direct camera"
             else -> "--"
-        }
-    }
-
-    private fun formatAltitudeText(altitudeMeters: Double): String {
-        return if (altitudeMeters.absoluteValue >= 1000.0) {
-            "${"%.2f".format(altitudeMeters / 1000.0)} km"
-        } else {
-            "${altitudeMeters.roundToInt()} m"
-        }
-    }
-
-    private fun formatSpeedText(speedMetersPerSecond: Double): String {
-        return "${"%.1f".format(speedMetersPerSecond)} m/s"
-    }
-
-    private fun formatDistanceText(distanceMeters: Double): String {
-        return if (distanceMeters >= 1000.0) {
-            "${"%.2f".format(distanceMeters / 1000.0)} km"
-        } else {
-            "${distanceMeters.roundToInt()} m"
         }
     }
 
