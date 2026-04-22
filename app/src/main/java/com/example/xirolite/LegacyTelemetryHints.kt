@@ -186,7 +186,7 @@ object LegacyTelemetryHints {
                     ?: "Waiting for UDP 6800",
                 confidence = if (snapshot?.flightModeText != null) "medium" else if (watch3014Summary?.value(2034) != null) "low" else "tracking",
                 source = if (snapshot?.flightModeText != null) {
-                    "Current XIRO Lite mapping follows the validated legacy pattern: 0 sats => Attitude, nonzero sats => GPS Mode."
+                    "Current XIRO Lite mapping follows the field-observed threshold: 0-6 sats => Attitude, 7+ sats => GPS Mode."
                 } else {
                     "Fallback to older 3014 flight-mode guess until live UDP is available."
                 }
@@ -286,7 +286,7 @@ object LegacyTelemetryHints {
             ),
             LegacyTelemetryTarget(
                 fieldName = "ZDPositioningMode / currentControlState",
-                description = "Legacy HUD mode label appears to be derived from satellite lock state plus control state, not from a single raw switch byte.",
+                description = "Legacy HUD mode label appears to be derived from satellite lock strength plus control state, not from a single raw switch byte.",
                 confidence = if (snapshot?.flightModeText != null) "medium" else "tracking",
                 currentLeads = listOfNotNull(
                     snapshot?.flightModeText?.let { "Derived HUD mode = $it" },
@@ -318,7 +318,7 @@ object LegacyTelemetryHints {
     fun calibrationChecklist(): List<String> = listOf(
         "Use UDP 6800 for live HUD values: drone power, displayed voltage, satellites, and stabilized Gear.",
         "Remote battery uses the TCP 6666 legacy getRemoteElectricity callback: request 1A 06 AC 06 D2, response 1A 06 AC 03 XX YY.",
-        "The current flight-mode label in XIRO Lite follows the validated legacy pattern: 0 satellites => Attitude, nonzero satellites => GPS Mode.",
+        "The current flight-mode label in XIRO Lite follows the field-observed threshold: 0-6 satellites => Attitude, 7+ satellites => GPS Mode.",
         "Compass/magnetic calibration warnings are decoded from remoteControlAlarm bit 0x02 at UDP[77].",
         "Use HJ checkpoints when validating any new candidate against XIRO Assistant.",
         "Keep raw UDP windows visible in Debug Mode when testing switch or satellite transitions, especially UDP[54] and UDP[59]."

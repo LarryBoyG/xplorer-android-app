@@ -96,7 +96,7 @@ object LiveFlightTelemetryHub {
         val satellites = snapshot.satellites ?: 0
         val position = snapshot.position
 
-        if (satellites > 0 && position != null) {
+        if (LegacyTelemetryDecoder.hasGpsModeSatelliteLock(satellites) && position != null) {
             if (homeCoordinate == null) {
                 homeCoordinate = position
             }

@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.xirolite"
         minSdk = 24
         targetSdk = 36
-        versionCode = 100
-        versionName = "0.4.0-beta"
+        versionCode = 101
+        versionName = "0.4.1-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

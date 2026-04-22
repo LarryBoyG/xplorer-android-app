@@ -82,6 +82,8 @@ class TelemetryProbe {
     private val focusedCommands: List<Pair<String, String>> = listOf(
         "cmd=3002" to "CMD 3002",
         "cmd=3014" to "CMD 3014",
+        "cmd=1003" to "CMD 1003",
+        "cmd=2009" to "CMD 2009",
         "cmd=3017" to "CMD 3017",
         "cmd=2010" to "CMD 2010",
         "cmd=2005" to "CMD 2005",
@@ -144,6 +146,14 @@ class TelemetryProbe {
                 null
             }
         }
+    }
+
+    suspend fun readCameraStorage(host: String): List<TelemetryResult> = withContext(Dispatchers.IO) {
+        listOf(
+            httpGet(host, "cmd=1003", "CMD 1003"),
+            httpGet(host, "cmd=2009", "CMD 2009"),
+            httpGet(host, "cmd=3014", "CMD 3014")
+        )
     }
 
     suspend fun watch3014(

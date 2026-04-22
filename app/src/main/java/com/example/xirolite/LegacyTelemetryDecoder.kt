@@ -20,6 +20,8 @@ data class LegacyTelemetrySnapshot(
 )
 
 object LegacyTelemetryDecoder {
+    const val GPS_MODE_MIN_SATELLITES = 7
+
     private const val RAW_LATITUDE_F32_OFFSET = 3
     private const val RAW_LONGITUDE_F32_OFFSET = 7
     private const val RAW_SATELLITE_OFFSET = 23
@@ -66,11 +68,7 @@ object LegacyTelemetryDecoder {
             decodedBaroMeters = baroHeight
         )
 
-        val flightModeText = when {
-            satellites == null -> null
-            satellites <= 0 -> "Attitude"
-            else -> "GPS Mode"
-        }
+        val flightModeText = flightModeTextForSatellites(satellites)
 
         val gpsText = when {
             satellites == null -> null
@@ -95,6 +93,16 @@ object LegacyTelemetryDecoder {
             hjCompatible = latestPacket.rawData.size >= 98
         )
     }
+
+    fun hasGpsModeSatelliteLock(satellites: Int?): Boolean =
+        satellites != null && satellites >= GPS_MODE_MIN_SATELLITES
+
+    fun flightModeTextForSatellites(satellites: Int?): String? =
+        when {
+            satellites == null -> null
+            hasGpsModeSatelliteLock(satellites) -> "GPS Mode"
+            else -> "Attitude"
+        }
 
     private fun selectTelemetryPacket(packets: List<RemoteTelemetryPacket>): RemoteTelemetryPacket? {
         val recentPackets = packets.take(GEAR_WINDOW_SIZE)

@@ -62,12 +62,12 @@ object BetaInference {
         val recentSatelliteSamples = recentRemotePackets
             .take(STABLE_NO_GPS_SAMPLE_COUNT)
             .mapNotNull { it.rawUnsigned(23) }
-        val stableNoGps = recentSatelliteSamples.size == STABLE_NO_GPS_SAMPLE_COUNT &&
-            recentSatelliteSamples.all { it <= 0 }
-        if (stableNoGps) {
+        val stableLowGpsLock = recentSatelliteSamples.size == STABLE_NO_GPS_SAMPLE_COUNT &&
+            recentSatelliteSamples.all { !LegacyTelemetryDecoder.hasGpsModeSatelliteLock(it) }
+        if (stableLowGpsLock) {
             warnings += FlightWarning(
-                title = "No GPS",
-                detail = "Aircraft is in Attitude until satellites are available.",
+                title = "GPS Lock Low",
+                detail = "Aircraft remains in Attitude until GPS lock reaches ${LegacyTelemetryDecoder.GPS_MODE_MIN_SATELLITES}+ satellites.",
                 severity = FlightWarningSeverity.CAUTION
             )
         }
@@ -172,11 +172,11 @@ object BetaInference {
         val sdCardSummary = telemetryResults.firstOrNull { it.label == "CMD 3014" }?.preview?.let { 
             TelemetryProbe().parse3014Summary(it)
         }
-        val sdCardText = when {
-            sdCardSummary?.value(3015) != null -> "${sdCardSummary.value(3015)} MB"
-            cameraReady -> SD_CARD_PENDING_TEXT
-            else -> "Unknown"
-        }
+        val sdCardText = buildSdCardText(
+            telemetryResults = telemetryResults,
+            fallback3014Summary = sdCardSummary,
+            cameraReady = cameraReady
+        )
         val fovText = if (cameraReady) FOV_PENDING_TEXT else "--"
 
         return DroneStateUi(
@@ -201,6 +201,46 @@ object BetaInference {
         )
     }
 
+    private fun buildSdCardText(
+        telemetryResults: List<TelemetryResult>,
+        fallback3014Summary: Telemetry3014Summary?,
+        cameraReady: Boolean
+    ): String {
+        val photoCount = telemetryResults
+            .firstSuccessfulPreview("CMD 1003")
+            ?.let { parseFirstIntTag(it, "Value") ?: parseFirstIntTag(it, "FREEPICNUM") }
+        val videoSeconds = telemetryResults
+            .firstSuccessfulPreview("CMD 2009")
+            ?.let { parseFirstIntTag(it, "Value") }
+
+        return when {
+            photoCount != null && videoSeconds != null ->
+                "$photoCount photos / ${formatCameraRemainingTime(videoSeconds)} video"
+            photoCount != null -> "$photoCount photos"
+            videoSeconds != null -> "${formatCameraRemainingTime(videoSeconds)} video"
+            fallback3014Summary?.value(3015) != null -> "${fallback3014Summary.value(3015)} MB"
+            cameraReady -> SD_CARD_PENDING_TEXT
+            else -> "Unknown"
+        }
+    }
+
+    private fun List<TelemetryResult>.firstSuccessfulPreview(label: String): String? =
+        firstOrNull { it.label == label && it.status.startsWith("HTTP 200") }?.preview
+
+    private fun parseFirstIntTag(xml: String, tag: String): Int? =
+        Regex("<$tag>\\s*(-?\\d+)\\s*</$tag>", RegexOption.IGNORE_CASE)
+            .find(xml)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+    private fun formatCameraRemainingTime(seconds: Int): String {
+        val totalMinutes = seconds.coerceAtLeast(0) / 60
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        return "${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}"
+    }
+
     private fun buildPreflight(
         networkInfo: DroneNetworkInfo,
         telemetryResults: List<TelemetryResult>,
@@ -217,7 +257,8 @@ object BetaInference {
             PreflightItem(
                 label = "GPS Sat",
                 value = droneState.satelliteText,
-                ok = droneState.satelliteText.toIntOrNull()?.let { it > 0 } == true
+                ok = droneState.satelliteText.toIntOrNull()
+                    ?.let { LegacyTelemetryDecoder.hasGpsModeSatelliteLock(it) } == true
             ),
             PreflightItem(
                 label = "Camera",
@@ -262,7 +303,9 @@ object BetaInference {
             PreflightItem(
                 label = "SD Card",
                 value = droneState.sdCardText,
-                ok = droneState.sdCardText != "Unknown" && droneState.sdCardText != "Reading..."
+                ok = droneState.sdCardText != "Unknown" &&
+                    droneState.sdCardText != "Reading..." &&
+                    droneState.sdCardText != SD_CARD_PENDING_TEXT
             )
         )
     }

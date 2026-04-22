@@ -11,8 +11,8 @@
       "type": "SINGLE",
       "filters": [],
       "attributes": [],
-      "versionCode": 100,
-      "versionName": "0.4.0-beta",
+      "versionCode": 101,
+      "versionName": "0.4.1-beta",
       "outputFile": "app-sideload.apk"
     }
   ],

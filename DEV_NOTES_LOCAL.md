@@ -1,10 +1,10 @@
 # XIRO Lite Local Dev Notes
 
-## Version: v0.4.0-beta
+## Version: v0.4.1-beta
 
 ### App Version
-- versionName: 0.4.0-beta
-- versionCode: 100
+- versionName: 0.4.1-beta
+- versionCode: 101
 
 ### Android Target
 - compileSdk: 36 (Android 16)
@@ -19,6 +19,7 @@
 
 ### Recent Changes
 - Remote controller battery is now read through the recovered legacy TCP 6666 `getRemoteElectricity` callback, using request `1A 06 AC 06 D2` and the calibrated raw-to-percent mapping validated from 40%, 60%, 80%, and 100% captures.
+- SD Card Remaining storage now uses the recovered camera `CMD 1003` photo-count value and `CMD 2009` video-time value, matching the legacy app's remaining photo/movie-space display instead of relying on the older `3014/3015` guess.
 - Storage setup now shows a XIRO-styled in-app permission prompt before attempting to create the shared XIRO folder tree, instead of jumping to Android storage settings during launch.
 - Users can continue with app-private storage for the current session if they do not grant shared storage access, keeping previews, downloads, offline maps, and HJ logs functional.
 - Live View RTSP now forces Media3 stream sockets onto the connected Wi-Fi network when possible, preventing Android from accidentally routing camera video over mobile data on phones with an active cellular plan.
@@ -52,6 +53,7 @@
 - Settings dialogs, library overlays, progress/info popups, and the HJ past-flight replay viewer were restyled to match the new 3D visual language instead of mixing old flat Material surfaces with the newer cards.
 - Live View now shares the same updated design language, including refined control surfaces and debug overlays, while keeping the existing bottom navigation behavior and sliding tab animations intact.
 - Telemetry now decodes live GPS coordinates from the HJ-compatible UDP packet layout, matching the same latitude/longitude positions previously validated through XIRO Assistant log playback.
+- Flight Mode now uses the field-observed XIRO threshold of `0-6 sats = Attitude` and `7+ sats = GPS Mode`, so low satellite counts no longer appear GPS-ready.
 - The Telemetry page now derives live speed and distance from the packet stream instead of leaving those fields blank, so motion becomes visible as soon as GPS coordinates begin changing in flight.
 - Wi-Fi telemetry now reflects only the relay-to-camera signal reported by the extender, so the Telemetry page does not mix in the phone's own Wi-Fi strength.
 - Top-bar telemetry labels are now cleaner and more honest: relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.
@@ -81,7 +83,6 @@
 - Settings now include an `Offline Maps` page for opening the official mapsforge download source, importing local `.map` regions, choosing the active region, and showing the required OpenStreetMap/mapsforge attribution in-app.
 
 ### Known Issues
-- SD Card Storage Remaining still appears to come from a separate camera callback path, so the Telemetry page shows it as pending until that transport is decoded cleanly.
 - FOV in the legacy app appears to be a camera-side field-of-view or digital zoom callback, not core flight telemetry, so XIRO Lite is leaving it pending until the camera-side query is mapped.
 - Xplorer 4K still needs real hardware validation to confirm whether its live-view timing matches the regular Xplorer and Gimbal flow.
 - Xplorer 4K time sync is still intentionally excluded until its Ambarella-side transport is captured cleanly.
@@ -94,7 +95,7 @@
 - Remote battery percentage is newly decoded from a calibrated legacy callback table and should be treated as experimental until more low-end remote battery captures are validated.
 - Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.
 - The first map release uses offline region files only, so users still need to download/import their own `.map` files before the map inset can render real geography in Live View.
-- The current flight-mode HUD label still follows the validated legacy pattern of `0 sats = Attitude` and `nonzero sats = GPS Mode`, but deeper control-state decoding is still in progress.
+- The current flight-mode HUD label follows the field-observed threshold of `0-6 sats = Attitude` and `7+ sats = GPS Mode`, but deeper control-state decoding is still in progress.
 - `.hj` logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.
 - UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.
 - Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.

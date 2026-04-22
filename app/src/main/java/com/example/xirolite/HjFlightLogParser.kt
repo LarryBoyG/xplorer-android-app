@@ -181,11 +181,7 @@ object HjFlightLogParser {
         val gear = record.getOrNull(GEAR_OFFSET)?.toInt()?.and(0xFF)?.takeIf { it in 1..3 }
         val switchControl = record.getOrNull(SWITCH_CONTROL_OFFSET)?.toInt()?.and(0xFF)?.takeIf { it in 1..3 }
 
-        val flightModeText = when {
-            satellites == null -> null
-            satellites <= 0 -> "Attitude"
-            else -> "GPS Mode"
-        }
+        val flightModeText = LegacyTelemetryDecoder.flightModeTextForSatellites(satellites)
 
         return HjTelemetrySample(
             index = index,
@@ -233,7 +229,10 @@ object HjFlightLogParser {
         var previousTimedSample: HjTelemetrySample? = null
 
         return perSecondSamples.map { sample ->
-            if (homeCoordinate == null && sample.position != null && (sample.satellites ?: 0) > 0) {
+            if (homeCoordinate == null &&
+                sample.position != null &&
+                LegacyTelemetryDecoder.hasGpsModeSatelliteLock(sample.satellites)
+            ) {
                 homeCoordinate = sample.position
             }
 

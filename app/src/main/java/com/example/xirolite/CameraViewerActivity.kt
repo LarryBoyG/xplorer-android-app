@@ -155,10 +155,10 @@ private fun CameraViewerScreen(
     val phoneFlightCoordinate by rememberPhoneFlightCoordinate(phoneLocationPermissionGranted)
     var hjLogStatus by remember { mutableStateOf("Idle") }
     var relayProbeResults by remember { mutableStateOf(listOf<CommandResult>()) }
-    var last3014Result by remember { mutableStateOf<TelemetryResult?>(null) }
+    var cameraStorageResults by remember { mutableStateOf(listOf<TelemetryResult>()) }
     val viewerUiState = BetaInference.buildUiState(
         networkInfo = networkInfo,
-        telemetryResults = last3014Result?.let { listOf(it) } ?: emptyList(),
+        telemetryResults = cameraStorageResults,
         watch3014Summary = null,
         recentRemotePackets = liveTelemetryPackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
@@ -701,11 +701,14 @@ private fun CameraViewerScreen(
     }
 
     LaunchedEffect(networkInfo.localIp, host) {
-        if (!networkInfo.localIp.isNullOrBlank()) {
-            while (true) {
-                last3014Result = telemetryProbe.httpGet(host, "cmd=3014", "CMD 3014")
-                delay(5_000)
-            }
+        if (networkInfo.localIp.isNullOrBlank()) {
+            cameraStorageResults = emptyList()
+            return@LaunchedEffect
+        }
+
+        while (true) {
+            cameraStorageResults = telemetryProbe.readCameraStorage(host)
+            delay(5_000)
         }
     }
 

@@ -308,8 +308,9 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Settings dialogs, library overlays, download/info popups, and the HJ past-flight replay viewer now follow the same 3D visual language instead of mixing flat Material cards with the newer style.",
         "Live View now shares the updated design treatment as well, while the bottom navigation bar and sliding tab/page animations remain intact.",
         "Telemetry now exposes separate Elevation and Target Elevation fields based on the HJ-validated height decode work, instead of forcing a single generic altitude label.",
-        "SD Card Remaining storage now attempts to parse from the camera's CMD 3014 summary (ID 3015), showing available space in MB when connected.",
+        "SD Card Remaining storage now uses the recovered camera CMD 1003 photo count and CMD 2009 video-time values, matching the legacy app's remaining photo/movie-space display.",
         "Telemetry now decodes live GPS coordinates from the HJ-compatible UDP packet layout, matching the same latitude/longitude positions previously validated through XIRO Assistant log playback.",
+        "Flight Mode now uses the field-observed XIRO threshold of 0-6 satellites as Attitude and 7+ satellites as GPS Mode, so low satellite counts no longer show as GPS-ready.",
         "The Telemetry page now derives live speed and distance from the packet stream instead of leaving those fields blank, so motion becomes visible as soon as GPS coordinates begin changing in flight.",
         "Wi-Fi telemetry now reflects only the relay-to-camera signal reported by the extender, so the Telemetry page no longer mixes in the phone's own Wi-Fi strength.",
         "Top-bar telemetry labels are now cleaner and more honest: relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.",
@@ -346,7 +347,7 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Remote media info is still best-effort and may show Unknown when the camera does not return reliable file headers or stream metadata.",
         "Remote battery percentage is newly decoded from a calibrated legacy callback table and should be treated as experimental until more low-end remote battery captures are validated.",
         "Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.",
-        "The current flight-mode HUD label still follows the validated legacy pattern of 0 sats = Attitude and nonzero sats = GPS Mode, but deeper control-state decoding is still in progress.",
+        "The current flight-mode HUD label follows the field-observed satellite threshold of 0-6 sats = Attitude and 7+ sats = GPS Mode, but deeper control-state decoding is still in progress.",
         "HJ logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.",
         "UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.",
         "Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.",
@@ -509,6 +510,7 @@ private fun XiroLiteBetaApp() {
     var targetedResults by remember { mutableStateOf(listOf<TargetedProbeResult>()) }
     var cameraInitResults by remember { mutableStateOf(listOf<CameraInitResult>()) }
     var telemetryResults by remember { mutableStateOf(listOf<TelemetryResult>()) }
+    var cameraStorageResults by remember { mutableStateOf(listOf<TelemetryResult>()) }
     var telemetryDiffResults by remember { mutableStateOf(listOf<TelemetryDiffResult>()) }
     var relayProbeResults by remember { mutableStateOf(listOf<CommandResult>()) }
     var cameraLibrary by remember { mutableStateOf(CameraLibraryState(emptyList(), emptyList())) }
@@ -629,7 +631,7 @@ private fun XiroLiteBetaApp() {
     val latestRemotePacket = remotePackets.firstOrNull()
     val betaUiState = BetaInference.buildUiState(
         networkInfo = networkInfo,
-        telemetryResults = telemetryResults,
+        telemetryResults = telemetryResults + cameraStorageResults,
         watch3014Summary = watch3014Summary,
         recentRemotePackets = remotePackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
@@ -722,6 +724,18 @@ private fun XiroLiteBetaApp() {
     fun isOnXiroWifi(): Boolean =
         networkInfo.localIp?.startsWith("192.168.2.") == true ||
             networkInfo.localIp?.startsWith("192.168.1.") == true
+
+    LaunchedEffect(networkInfo.localIp, host) {
+        if (!isOnXiroWifi()) {
+            cameraStorageResults = emptyList()
+            return@LaunchedEffect
+        }
+
+        while (true) {
+            cameraStorageResults = telemetryProbe.readCameraStorage(host)
+            delay(15_000)
+        }
+    }
 
     LaunchedEffect(networkInfo.localIp, relayHost) {
         if (isOnXiroWifi()) {
@@ -4878,7 +4892,8 @@ private fun PastFlightReplayDialog(
                                     "${"%.6f".format(Locale.US, point.latitude)}:${"%.6f".format(Locale.US, point.longitude)}"
                                 }
                             val homePosition = samples.firstOrNull { sample ->
-                                sample.position != null && (sample.satellites ?: 0) > 0
+                                sample.position != null &&
+                                    LegacyTelemetryDecoder.hasGpsModeSatelliteLock(sample.satellites)
                             }?.position
                             val scrollState = rememberScrollState()
 
