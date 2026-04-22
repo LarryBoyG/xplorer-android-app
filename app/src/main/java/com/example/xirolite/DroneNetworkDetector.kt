@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.net.ConnectivityManager
 import android.net.LinkAddress
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import java.net.Inet4Address
@@ -22,8 +23,9 @@ class DroneNetworkDetector(
 ) {
     fun detect(): DroneNetworkInfo {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = cm.activeNetwork
-            ?: return DroneNetworkInfo(null, null, null, "Unknown", listOf("No active network"))
+        val wifiRoute = WifiRouteSelector.selectWifiNetwork(context, null)
+            ?: return DroneNetworkInfo(null, null, null, "Unknown", listOf("No Wi-Fi network"))
+        val network = wifiRoute.network
 
         val caps = cm.getNetworkCapabilities(network)
         if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
@@ -46,7 +48,7 @@ class DroneNetworkDetector(
         val gatewayIp = gatewayIpv4?.hostAddress
 
         val guessed = gatewayIp ?: guessFromLocal(localIpv4)
-        val wifiSignalText = detectWifiSignalText()
+        val wifiSignalText = detectWifiSignalText(network)
 
         return DroneNetworkInfo(
             localIp = localIp,
@@ -62,9 +64,8 @@ class DroneNetworkDetector(
         )
     }
 
-    private fun detectWifiSignalText(): String {
+    private fun detectWifiSignalText(network: Network): String {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = cm.activeNetwork ?: return "Unknown"
         val caps = cm.getNetworkCapabilities(network)
 
         val capabilityRssi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

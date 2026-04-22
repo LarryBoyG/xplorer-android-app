@@ -7,6 +7,7 @@ object BetaInference {
     private const val CRITICAL_POWER_WARNING_THRESHOLD = 10
     private const val STABLE_NO_GPS_SAMPLE_COUNT = 3
     private const val LEGAL_HEIGHT_LIMIT_METERS = 120.0
+    private const val LEGACY_ALARM_MAGNETIC_ERROR = 0x02
     private const val SD_CARD_PENDING_TEXT = "Pending camera decode"
     private const val FOV_PENDING_TEXT = "Pending camera callback"
 
@@ -16,12 +17,13 @@ object BetaInference {
         watch3014Summary: Telemetry3014Summary?,
         recentRemotePackets: List<RemoteTelemetryPacket>,
         derivedFlightTelemetry: DerivedFlightTelemetry,
+        remoteBatteryReading: RemoteBatteryReading? = null,
         relayProbeResults: List<CommandResult>,
         flightLogStatusText: String,
         measurementUnit: MeasurementUnit
     ): BetaUiState {
         val latestRemotePacket = recentRemotePackets.firstOrNull()
-        val candidateFields = buildCandidates(latestRemotePacket, watch3014Summary)
+        val candidateFields = buildCandidates(latestRemotePacket, watch3014Summary, remoteBatteryReading)
         val relayState = buildRelayState(relayProbeResults)
         val droneState = buildDroneState(
             watch3014Summary = watch3014Summary,
@@ -31,6 +33,7 @@ object BetaInference {
             networkInfo = networkInfo,
             relayState = relayState,
             derivedFlightTelemetry = derivedFlightTelemetry,
+            remoteBatteryReading = remoteBatteryReading,
             flightLogStatusText = flightLogStatusText,
             measurementUnit = measurementUnit
         )
@@ -66,6 +69,14 @@ object BetaInference {
                 title = "No GPS",
                 detail = "Aircraft is in Attitude until satellites are available.",
                 severity = FlightWarningSeverity.CAUTION
+            )
+        }
+
+        if (snapshot?.remoteControlAlarm?.let { it and LEGACY_ALARM_MAGNETIC_ERROR != 0 } == true) {
+            warnings += FlightWarning(
+                title = "Compass Calibration",
+                detail = "Compass calibration failure. Recalibrate before flying.",
+                severity = FlightWarningSeverity.CRITICAL
             )
         }
 
@@ -108,6 +119,7 @@ object BetaInference {
         networkInfo: DroneNetworkInfo,
         relayState: RelayStateUi,
         derivedFlightTelemetry: DerivedFlightTelemetry,
+        remoteBatteryReading: RemoteBatteryReading?,
         flightLogStatusText: String,
         measurementUnit: MeasurementUnit
     ): DroneStateUi {
@@ -180,11 +192,12 @@ object BetaInference {
                 ?: LegacyTelemetryHints.droneBatteryHudText(packet),
             relaySignalText = buildWifiTelemetryText(networkInfo, relayState),
             sdCardText = sdCardText,
-            remoteBatteryText = LegacyTelemetryHints.remoteBatteryHudText(packet),
+            remoteBatteryText = remoteBatteryReading?.let { "${it.percent}%" }
+                ?: LegacyTelemetryHints.remoteBatteryHudText(packet),
             gearText = legacySnapshot?.gearSelection?.toString() ?: "--",
             flightLogText = flightLogStatusText,
             fovText = fovText,
-            summary = LegacyTelemetryHints.hudSummaryText(packet, flightLogStatusText)
+            summary = LegacyTelemetryHints.hudSummaryText(packet, flightLogStatusText, remoteBatteryReading)
         )
     }
 
@@ -215,6 +228,11 @@ object BetaInference {
                 label = "Aircraft Power",
                 value = droneState.droneBatteryText,
                 ok = droneState.droneBatteryText != "--"
+            ),
+            PreflightItem(
+                label = "Remote Power",
+                value = droneState.remoteBatteryText,
+                ok = droneState.remoteBatteryText != "--"
             ),
             PreflightItem(
                 label = "Wi-Fi Signal",
@@ -348,11 +366,13 @@ object BetaInference {
 
     private fun buildCandidates(
         latestRemotePacket: RemoteTelemetryPacket?,
-        watch3014Summary: Telemetry3014Summary?
+        watch3014Summary: Telemetry3014Summary?,
+        remoteBatteryReading: RemoteBatteryReading?
     ): List<TelemetryFieldCandidate> =
         LegacyTelemetryHints.buildCandidateFields(
             watch3014Summary = watch3014Summary,
-            latestRemotePacket = latestRemotePacket
+            latestRemotePacket = latestRemotePacket,
+            remoteBatteryReading = remoteBatteryReading
         )
 
     private fun candidateValue(packet: RemoteTelemetryPacket, index: Int): Int {

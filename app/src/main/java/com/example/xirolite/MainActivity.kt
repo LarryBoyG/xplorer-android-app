@@ -2,7 +2,9 @@
 
 package com.example.xirolite
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -123,6 +125,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -152,23 +155,11 @@ import kotlin.math.roundToInt
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        maybeRequestLegacyStorageAccess()
-        LocalLibraryManager(this).ensureFolders()
         enableEdgeToEdge()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
             MaterialTheme(colorScheme = xiroColorScheme()) {
                 XiroLiteBetaApp()
-            }
-        }
-    }
-
-    private fun maybeRequestLegacyStorageAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName")))
-            } catch (_: Throwable) {
-                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
             }
         }
     }
@@ -242,6 +233,34 @@ private fun currentDisclaimerText(): String = """
     Always follow local laws, aviation regulations, safety guidelines, and responsible operating practices.
 """.trimIndent()
 
+private fun hasSharedStorageAccess(context: android.content.Context): Boolean {
+    return when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
+        Build.VERSION.SDK_INT <= Build.VERSION_CODES.P -> {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+        else -> true
+    }
+}
+
+private fun shouldPromptForSharedStorageAccess(context: android.content.Context): Boolean {
+    return Build.VERSION.SDK_INT != Build.VERSION_CODES.Q && !hasSharedStorageAccess(context)
+}
+
+private fun storageSettingsIntent(context: android.content.Context): Intent {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Intent(
+            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse("package:${context.packageName}")
+        )
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+    }
+}
+
 private data class LibraryDownloadProgress(
     val title: String,
     val bytesRead: Long = 0L,
@@ -259,6 +278,11 @@ private data class LibraryMediaInfo(
 private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     version = BuildConfig.VERSION_NAME,
     changes = listOf(
+        "Remote controller battery is now read through the recovered legacy TCP 6666 getRemoteElectricity callback, using the validated 1A 06 AC 06 D2 request and calibrated raw-to-percent mapping from 40%, 60%, 80%, and 100% captures.",
+        "Storage setup now uses an in-app permission prompt before attempting to create the shared XIRO folder tree, instead of jumping to Android storage settings during launch.",
+        "If shared storage access is not granted, XIRO Lite can continue with app-private storage for the session while still keeping previews, downloads, maps, and HJ logs functional.",
+        "Live View RTSP now forces stream sockets onto the connected Wi-Fi network when possible, helping phones with active mobile data keep the camera stream on the XIRO extender instead of routing through cellular.",
+        "XIRO network detection now scans connected Wi-Fi networks instead of trusting only Android's active/default network, so the app can still recognize the extender when cellular remains the preferred internet route.",
         "The launcher icon now correctly uses the mountain-and-radar XIRO Lite artwork, replacing the accidentally wired placeholder icon from the previous build attempt.",
         "XIRO Lite now shows a mandatory launch disclaimer on every startup, and users must explicitly agree before continuing to use the app.",
         "The launch disclaimer cannot be dismissed accidentally by tapping outside or pressing back, and it now offers a clear exit path for users who do not want to continue.",
@@ -303,6 +327,7 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Settings subpages now use simpler left-arrow navigation, Past Flights auto-populates from the XIRO hj folder without extra refresh clutter, and the replay player was simplified to a cleaner single-control layout.",
         "The camera home screen icon now centers more reliably across device sizes, and Live View uses cleaner non-debug capture text plus a stronger shutter / record sound path.",
         "The Camera tab hero now sits truly centered in the available pane, and the Live View right-side controls, mode selector, and warning banners no longer stretch awkwardly across the screen.",
+        "Compass calibration failure is now decoded from the legacy remote alarm bitmask at UDP[77], matching the legacy SDK MAGNETIC_ERROR flag and the captured compass-failure pcap.",
         "The Library tab now hides low-level Camera SD command diagnostics in normal use, so empty-card and disconnected states stay cleaner unless Debug Mode is enabled.",
         "Local Library tiles now size from the available card width instead of using a rigid thumbnail size, giving the grid a more symmetrical layout with less dead space on the right.",
         "Live View HUD selections now preserve older saved Altitude and Baro HGT layouts by automatically migrating them to the new Elevation field.",
@@ -319,12 +344,12 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "Remote camera-SD delete is still intentionally excluded until the true legacy transport is proven.",
         "Remote video thumbnail and screennail transport is still not fully decoded, so remote camera videos remain download-first instead of preview-first.",
         "Remote media info is still best-effort and may show Unknown when the camera does not return reliable file headers or stream metadata.",
-        "Remote battery is still unresolved because the legacy app used a separate callback path that has not been decoded yet.",
+        "Remote battery percentage is newly decoded from a calibrated legacy callback table and should be treated as experimental until more low-end remote battery captures are validated.",
         "Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.",
         "The current flight-mode HUD label still follows the validated legacy pattern of 0 sats = Attitude and nonzero sats = GPS Mode, but deeper control-state decoding is still in progress.",
         "HJ logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.",
         "UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.",
-        "Deeper legacy warnings like return-home, compass fault, and optical-flow fault are still intentionally excluded until their raw fields are validated.",
+        "Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.",
         "XIRO Lite still approximates the legacy keepalive by refreshing the RTSP session proactively instead of issuing true RTSP GET_PARAMETER on the active ExoPlayer session."
     )
 )
@@ -529,6 +554,7 @@ private fun XiroLiteBetaApp() {
     val remotePackets by LiveFlightTelemetryHub.recentPackets.collectAsState()
     val derivedFlightTelemetry by LiveFlightTelemetryHub.derivedTelemetry.collectAsState()
     val remoteUdpRunning by LiveFlightTelemetryHub.isRunning.collectAsState()
+    val remoteBatteryReading by RemoteBatteryHub.latestReading.collectAsState()
     val liveLogs = remember { mutableStateListOf<String>() }
 
     var monitorJob by remember { mutableStateOf<Job?>(null) }
@@ -566,6 +592,22 @@ private fun XiroLiteBetaApp() {
             releasePrefs.getString("last_ack_version", null) != releaseNotes.version
         )
     }
+    var showStoragePermissionDialog by remember { mutableStateOf(false) }
+    var storagePromptHandledForSession by remember { mutableStateOf(false) }
+    var storageSetupComplete by remember { mutableStateOf(false) }
+    var storageSetupRefreshToken by remember { mutableIntStateOf(0) }
+    var storageSetupStatus by remember { mutableStateOf("") }
+
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        storageSetupRefreshToken += 1
+    }
+    val storageSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        storageSetupRefreshToken += 1
+    }
 
     val rtspUrl = selectedProfile.primaryRtspUrl(host)
     val runnableCommands = remember(selectedProfile) {
@@ -591,19 +633,29 @@ private fun XiroLiteBetaApp() {
         watch3014Summary = watch3014Summary,
         recentRemotePackets = remotePackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
+        remoteBatteryReading = remoteBatteryReading,
         relayProbeResults = relayProbeResults,
         flightLogStatusText = hjLogStatusText,
         measurementUnit = measurementUnit
     )
 
-    LaunchedEffect(Unit) {
-        val folders = localLibraryManager.ensureFolders()
+    LaunchedEffect(showDisclaimerDialog, storagePromptHandledForSession, storageSetupRefreshToken) {
+        if (showDisclaimerDialog || storageSetupComplete) return@LaunchedEffect
+        if (!storagePromptHandledForSession && shouldPromptForSharedStorageAccess(context)) {
+            showStoragePermissionDialog = true
+            storageSetupStatus = "Storage access is needed before creating the shared XIRO folder tree."
+            return@LaunchedEffect
+        }
+
+        val folders = withContext(Dispatchers.IO) { localLibraryManager.ensureFolders() }
         localLibraryItems = localLibraryManager.scanLocalItems(cameraLibrary.items)
         pastFlightSummaries = withContext(Dispatchers.IO) {
             HjFlightLogParser.scanFlightSummaries(folders.metadata)
         }
         installedOfflineMaps = offlineMapManager.listInstalledMaps()
         lastPastFlightsRefreshAtMs = System.currentTimeMillis()
+        storageSetupComplete = true
+        storageSetupStatus = "Using storage root: ${folders.root.absolutePath}"
     }
 
     LaunchedEffect(networkInfo.localIp, networkInfo.gatewayIp) {
@@ -618,6 +670,34 @@ private fun XiroLiteBetaApp() {
     fun appendLog(message: String) {
         liveLogs.add("${formatTimestamp(System.currentTimeMillis())}  $message")
         if (liveLogs.size > 300) liveLogs.removeAt(0)
+    }
+
+    fun requestSharedStorageAccess() {
+        showStoragePermissionDialog = false
+        storagePromptHandledForSession = true
+        storageSetupStatus = "Waiting for storage permission..."
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val appSettingsIntent = storageSettingsIntent(context)
+            runCatching {
+                storageSettingsLauncher.launch(appSettingsIntent)
+            }.onFailure {
+                storageSettingsLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            }
+        } else {
+            legacyStoragePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                )
+            )
+        }
+    }
+
+    fun continueWithAppStorage() {
+        showStoragePermissionDialog = false
+        storagePromptHandledForSession = true
+        storageSetupRefreshToken += 1
+        storageSetupStatus = "Continuing with app-private storage for this session."
     }
 
     val importOfflineMapLauncher = rememberLauncherForActivityResult(
@@ -642,6 +722,18 @@ private fun XiroLiteBetaApp() {
     fun isOnXiroWifi(): Boolean =
         networkInfo.localIp?.startsWith("192.168.2.") == true ||
             networkInfo.localIp?.startsWith("192.168.1.") == true
+
+    LaunchedEffect(networkInfo.localIp, relayHost) {
+        if (isOnXiroWifi()) {
+            RemoteBatteryHub.start(
+                context = context.applicationContext,
+                host = relayHost,
+                onLog = ::appendLog
+            )
+        } else {
+            RemoteBatteryHub.stop(clearReading = true)
+        }
+    }
 
     LaunchedEffect(networkInfo.localIp, remoteUdpRunning, remoteUdpUserDisabled, remoteUdpProbeInProgress) {
         when {
@@ -1112,7 +1204,15 @@ private fun XiroLiteBetaApp() {
         )
     }
 
-    if (!showDisclaimerDialog && showReleaseNotesDialog) {
+    if (!showDisclaimerDialog && showStoragePermissionDialog) {
+        StoragePermissionDialog(
+            statusText = storageSetupStatus,
+            onGrant = ::requestSharedStorageAccess,
+            onContinuePrivate = ::continueWithAppStorage
+        )
+    }
+
+    if (!showDisclaimerDialog && !showStoragePermissionDialog && storageSetupComplete && showReleaseNotesDialog) {
         ReleaseNotesDialog(
             notes = releaseNotes,
             onDismiss = {
@@ -1897,6 +1997,7 @@ private fun buildExportText(
             sb.appendLine("Phase Counter [79..80]: ${packet.phaseCounterHex}")
             sb.appendLine("Tail [86..88]: ${packet.tailHex}")
             sb.appendLine("Hex Preview: ${packet.hexPreview}")
+            sb.appendLine("Hex Full: ${packet.hexFull}")
             sb.appendLine()
         }
     }
@@ -2140,6 +2241,7 @@ private fun buildUdpProbeExperimentExportText(
                 sb.appendLine("Phase Counter [79..80]: ${packet.phaseCounterHex}")
                 sb.appendLine("Tail [86..88]: ${packet.tailHex}")
                 sb.appendLine("Hex Preview: ${packet.hexPreview}")
+                sb.appendLine("Hex Full: ${packet.hexFull}")
                 sb.appendLine()
             }
         }
@@ -3417,6 +3519,72 @@ private fun DisclaimerDialog(
                     XiroSecondaryButton(onClick = onExit) { Text("Exit App") }
                     Spacer(modifier = Modifier.width(8.dp))
                     XiroPrimaryButton(onClick = onAgree) { Text("Agree and Continue") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StoragePermissionDialog(
+    statusText: String,
+    onGrant: () -> Unit,
+    onContinuePrivate: () -> Unit
+) {
+    val grantLabel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        "Open Storage Settings"
+    } else {
+        "Allow Storage Access"
+    }
+    val permissionDetail = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        "Android requires a settings screen for shared file access. Enable file access there, then return to XIRO Lite."
+    } else {
+        "Android will show its storage permission prompt after you continue."
+    }
+
+    Dialog(
+        onDismissRequest = onContinuePrivate,
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        XiroDialogPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "Storage Access",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = XiroDesignTokens.TextPrimary
+                )
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "XIRO Lite needs storage access to create and use the shared XIRO folder tree for HD downloads, preview cache files, offline maps, and HJ flight logs.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                    Text(
+                        permissionDetail,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                    if (statusText.isNotBlank()) {
+                        Text(
+                            statusText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = XiroDesignTokens.TextMuted
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    XiroSecondaryButton(onClick = onContinuePrivate) { Text("Use App Storage") }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    XiroPrimaryButton(onClick = onGrant) { Text(grantLabel) }
                 }
             }
         }

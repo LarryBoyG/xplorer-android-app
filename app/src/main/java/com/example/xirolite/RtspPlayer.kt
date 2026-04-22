@@ -2,6 +2,7 @@ package com.example.xirolite
 
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.net.Uri
 import android.os.SystemClock
 import android.view.TextureView
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -32,6 +33,8 @@ class RtspPlayerController {
     internal var captureFrameImpl: (() -> Bitmap?)? = null
     fun captureFrame(): Bitmap? = captureFrameImpl?.invoke()
 }
+
+private const val LEGACY_RTSP_USER_AGENT = "xiroRTSP (Rtsp Client/1.0.0)"
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -201,9 +204,21 @@ fun RtspPlayer(
     LaunchedEffect(url, reloadToken, watchdogReloadToken, exoPlayer) {
         try {
             onLog("Preparing RTSP stream: $url - profile=${streamProfile.label}")
-            val mediaSource = RtspMediaSource.Factory()
+            val targetHost = Uri.parse(url).host
+            val wifiRoute = WifiRouteSelector.selectWifiNetwork(context, targetHost)
+            val rtspFactory = RtspMediaSource.Factory()
                 .setForceUseRtpTcp(true)
-                .createMediaSource(MediaItem.fromUri(url))
+                .setUserAgent(LEGACY_RTSP_USER_AGENT)
+                .setTimeoutMs(5_000)
+
+            if (wifiRoute != null) {
+                rtspFactory.setSocketFactory(wifiRoute.socketFactory)
+                onLog("RTSP using ${wifiRoute.summary}")
+            } else {
+                onLog("RTSP Wi-Fi route unavailable; using Android default route")
+            }
+
+            val mediaSource = rtspFactory.createMediaSource(MediaItem.fromUri(url))
             exoPlayer.setMediaSource(mediaSource)
             exoPlayer.prepare()
         } catch (t: Throwable) {

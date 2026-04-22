@@ -86,7 +86,7 @@ fun resolveStatusIndicatorLevel(label: String, value: String, ok: Boolean): Stat
             }
         }
 
-        "Aircraft Power" -> {
+        "Aircraft Power", "Remote Power" -> {
             val percent = parseLeadingInt(value)
             when {
                 percent == null -> if (ok) StatusIndicatorLevel.GOOD else StatusIndicatorLevel.NEUTRAL

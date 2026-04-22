@@ -6,11 +6,12 @@
 local.properties
 
 # Local notes
-DEV_NOTES_LOCAL.md
+# DEV_NOTES_LOCAL.md kept for documentation
 
 # Build output
 build/
 app/build/
+app/sideload/*.apk
 
 # OS files
 .DS_Store

@@ -93,6 +93,7 @@ class RemoteTelemetryProbe {
         54,
         57, 59,
         69, 70,
+        77,
         79,
         86, 87, 88,
         97
@@ -106,6 +107,7 @@ class RemoteTelemetryProbe {
         51,
         57,
         69,
+        77,
         79,
         86, 87
     )

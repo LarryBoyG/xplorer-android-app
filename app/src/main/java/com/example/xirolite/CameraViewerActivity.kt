@@ -139,6 +139,7 @@ private fun CameraViewerScreen(
     val telemetryProbe = remember { TelemetryProbe() }
     val liveTelemetryPackets by LiveFlightTelemetryHub.recentPackets.collectAsState()
     val derivedFlightTelemetry by LiveFlightTelemetryHub.derivedTelemetry.collectAsState()
+    val remoteBatteryReading by RemoteBatteryHub.latestReading.collectAsState()
     val uiPrefs = remember { context.getSharedPreferences(UI_PREFS_NAME, android.content.Context.MODE_PRIVATE) }
     val measurementUnit = remember {
         MeasurementUnit.fromStored(uiPrefs.getString(MEASUREMENT_UNIT_PREF_KEY, null))
@@ -161,6 +162,7 @@ private fun CameraViewerScreen(
         watch3014Summary = null,
         recentRemotePackets = liveTelemetryPackets,
         derivedFlightTelemetry = derivedFlightTelemetry,
+        remoteBatteryReading = remoteBatteryReading,
         relayProbeResults = relayProbeResults,
         flightLogStatusText = hjLogStatus,
         measurementUnit = measurementUnit
@@ -634,6 +636,11 @@ private fun CameraViewerScreen(
 
     LaunchedEffect(Unit) {
         LiveFlightTelemetryHub.start()
+        RemoteBatteryHub.start(
+            context = context.applicationContext,
+            host = relayHost,
+            onLog = ::log
+        )
         lastLoggedPacketTimestamp = liveTelemetryPackets.firstOrNull()?.timestampMs ?: 0L
         val hjState = hjLogRecorder.startSession("LIVEVIEW")
         hjLogStatus = hjState.statusText
@@ -1366,6 +1373,7 @@ private fun compactHudLabel(label: String, compactLevel: Int): String {
     return when (label) {
         "GPS Sat" -> "GPS"
         "Aircraft Power" -> if (compactLevel >= 2) "Power" else label
+        "Remote Power" -> if (compactLevel >= 2) "Remote" else label
         "Flight Mode" -> "Mode"
         "Elevation" -> "Elev"
         "Target Elevation" -> if (compactLevel >= 2) "Target" else "Target Elev"

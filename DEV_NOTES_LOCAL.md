@@ -1,10 +1,10 @@
 # XIRO Lite Local Dev Notes
 
-## Version: v0.3.97-beta
+## Version: v0.4.0-beta
 
 ### App Version
-- versionName: 0.3.97-beta
-- versionCode: 97
+- versionName: 0.4.0-beta
+- versionCode: 100
 
 ### Android Target
 - compileSdk: 36 (Android 16)
@@ -18,6 +18,11 @@
 - range extender bind and settings parity
 
 ### Recent Changes
+- Remote controller battery is now read through the recovered legacy TCP 6666 `getRemoteElectricity` callback, using request `1A 06 AC 06 D2` and the calibrated raw-to-percent mapping validated from 40%, 60%, 80%, and 100% captures.
+- Storage setup now shows a XIRO-styled in-app permission prompt before attempting to create the shared XIRO folder tree, instead of jumping to Android storage settings during launch.
+- Users can continue with app-private storage for the current session if they do not grant shared storage access, keeping previews, downloads, offline maps, and HJ logs functional.
+- Live View RTSP now forces Media3 stream sockets onto the connected Wi-Fi network when possible, preventing Android from accidentally routing camera video over mobile data on phones with an active cellular plan.
+- XIRO network detection now scans connected Wi-Fi networks instead of trusting only Android's active/default network, so the app can still recognize the extender when cellular remains the preferred internet route.
 - The launcher icon now correctly uses the mountain-and-radar artwork from the approved XIRO Lite icon concept, replacing the accidentally wired placeholder icon from the previous build attempt.
 - The launch splash screen now uses the new ReDiscover Your Sky artwork, with the slogan overlaid directly in the splash layout for a stronger first-open identity.
 - The splash slogan now reads `ReDiscover / Your / Sky`, with the `Re` highlighted in XIRO green to match the preserved app branding.
@@ -68,6 +73,7 @@
 - Live View capture feedback now uses cleaner non-debug wording and a stronger shutter / record start-stop sound path.
 - The Camera tab hero now sits truly centered in the available camera pane, and the Live View right-side control rail is back in a stable right-edge layout.
 - Live View warning banners and the photo/video selector now size to their content instead of stretching across the full screen width.
+- Compass calibration failure is now decoded from the legacy remote alarm bitmask at `UDP[77]`, matching the legacy SDK `MAGNETIC_ERROR = 2` flag and the captured compass-failure pcap.
 - The Library tab now hides low-level Camera SD command diagnostics in normal use, so empty-card and disconnected states stay cleaner unless Debug Mode is enabled.
 - Local Library tiles now size from the available card width instead of using a rigid thumbnail size, giving the grid a more symmetrical layout with less dead space on the right.
 - Telemetry now exposes decoded `Elevation` and `Target Elevation` fields from the recovered Baro/Target height paths, and Live View HUD selections automatically migrate the older `Altitude` and `Baro HGT` toggles to `Elevation`.
@@ -85,13 +91,13 @@
 - Remote camera-SD delete is still intentionally excluded until the true legacy transport is proven.
 - Remote video thumbnail and screennail transport is still not fully decoded, so remote camera videos remain download-first instead of preview-first.
 - Remote media info is still best-effort and may show `Unknown` when the camera does not return reliable file headers or stream metadata.
-- Remote battery is still unresolved because the legacy app used a separate callback path that has not been decoded yet.
+- Remote battery percentage is newly decoded from a calibrated legacy callback table and should be treated as experimental until more low-end remote battery captures are validated.
 - Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.
 - The first map release uses offline region files only, so users still need to download/import their own `.map` files before the map inset can render real geography in Live View.
 - The current flight-mode HUD label still follows the validated legacy pattern of `0 sats = Attitude` and `nonzero sats = GPS Mode`, but deeper control-state decoding is still in progress.
 - `.hj` logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.
 - UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.
-- Deeper legacy warnings like return-home, compass fault, and optical-flow fault are still intentionally excluded until their raw fields are validated.
+- Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.
 - XIRO Lite still approximates the legacy keepalive by refreshing the RTSP session proactively instead of issuing true RTSP GET_PARAMETER on the active ExoPlayer session.
 
 ### Release Checklist

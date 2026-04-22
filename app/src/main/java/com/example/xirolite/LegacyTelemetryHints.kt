@@ -27,6 +27,7 @@ object LegacyTelemetryHints {
         34 to "Altitude (Hi)",
         69 to "Voltage (Lo)",
         70 to "Voltage (Hi)",
+        77 to "Remote Control Alarm",
         79 to "Power Window (Legacy Guess)",
         86 to "Tail / Error A",
         87 to "Tail / Error B",
@@ -50,6 +51,7 @@ object LegacyTelemetryHints {
         34 to "High byte of the altitude candidate (u16 @ 33 / 10.0).",
         69 to "Low byte of the validated displayed voltage pair.",
         70 to "High byte of the validated displayed voltage pair.",
+        77 to "Validated legacy remoteControlAlarm bitmask. Bit 0x02 matches the legacy MAGNETIC_ERROR compass calibration alert.",
         79 to "Older power-window guess kept for comparison with earlier probe logs.",
         86 to "Tail/error-state candidate. Useful for return-home and alert comparisons.",
         87 to "Tail/error-state candidate. Useful for return-home and alert comparisons.",
@@ -66,6 +68,7 @@ object LegacyTelemetryHints {
         57 to "Navigation Pair",
         33 to "Altitude",
         69 to "Drone Voltage",
+        77 to "Remote Alarm",
         79 to "Power Pair (Legacy Guess)",
         86 to "Tail / Error Pair"
     )
@@ -79,6 +82,7 @@ object LegacyTelemetryHints {
         57 to "Navigation-state pair candidate. Useful for GPS and turn-back comparisons.",
         33 to "Altitude candidate from u16 @ 33 / 10.0 meters. Recovered from legacy HJ analysis.",
         69 to "High-confidence legacy displayed voltage pair. XIRO Assistant voltage matched u16 / 204.8 exactly in the filled HJ checkpoints.",
+        77 to "Validated remoteControlAlarm byte. Bit 0x02 is the legacy compass/magnetic calibration failure flag.",
         79 to "Older power-pair guess kept for comparison with earlier probe logs.",
         86 to "Low-confidence turn-back / error-state pair candidate."
     )
@@ -100,16 +104,13 @@ object LegacyTelemetryHints {
         return snapshot?.droneBatteryPercent?.let { "$it%" } ?: "--"
     }
 
-    fun remoteBatteryHudText(packet: RemoteTelemetryPacket?): String {
-        val falseLead = packet?.rawUnsigned(97)
-        return if (falseLead != null) {
-            "Legacy callback (not UDP 97=$falseLead)"
-        } else {
-            "Legacy callback"
-        }
-    }
+    fun remoteBatteryHudText(packet: RemoteTelemetryPacket?): String = "--"
 
-    fun hudSummaryText(packet: RemoteTelemetryPacket?, hjStatusText: String): String {
+    fun hudSummaryText(
+        packet: RemoteTelemetryPacket?,
+        hjStatusText: String,
+        remoteBatteryReading: RemoteBatteryReading? = null
+    ): String {
         val snapshot = LegacyTelemetryDecoder.decode(packet)
         val details = mutableListOf(
             "Legacy-calibrated UDP decode: power from u16@51/256, voltage from u16@69/204.8, satellites from b23."
@@ -121,13 +122,18 @@ object LegacyTelemetryHints {
         if (hjStatusText.isNotBlank()) {
             details += "HJ log: $hjStatusText."
         }
-        details += "Remote battery still comes from a separate legacy callback path."
+        if (remoteBatteryReading != null) {
+            details += "Remote battery: ${remoteBatteryReading.percent}% from TCP 6666 raw ${remoteBatteryReading.raw}."
+        } else {
+            details += "Remote battery waits for the TCP 6666 legacy callback."
+        }
         return details.joinToString(" ")
     }
 
     fun buildCandidateFields(
         watch3014Summary: Telemetry3014Summary?,
-        latestRemotePacket: RemoteTelemetryPacket?
+        latestRemotePacket: RemoteTelemetryPacket?,
+        remoteBatteryReading: RemoteBatteryReading? = null
     ): List<TelemetryFieldCandidate> {
         val packet = latestRemotePacket
         val snapshot = LegacyTelemetryDecoder.decode(packet)
@@ -199,11 +205,20 @@ object LegacyTelemetryHints {
                 source = "Raw control-state lead kept for debug comparisons when testing switch and mode transitions."
             ),
             TelemetryFieldCandidate(
+                label = "ZDDroneState.remoteControlAlarm",
+                value = snapshot?.remoteControlAlarm?.let { "UDP[77] = 0x%02X".format(it) }
+                    ?: "Waiting for UDP 6800",
+                confidence = if (snapshot?.remoteControlAlarm != null) "high" else "tracking",
+                source = "Validated against the compass-failure pcap: bit 0x02 matches the legacy MAGNETIC_ERROR alert."
+            ),
+            TelemetryFieldCandidate(
                 label = "Remote battery",
-                value = packet?.rawUnsigned(97)?.let { "Separate callback path. Ignore UDP[97]=$it as percent." }
-                    ?: "Separate callback path in legacy SDK",
-                confidence = "high",
-                source = "Recovered OnGetRemoteElectricityCallBack from the legacy SDK."
+                value = remoteBatteryReading?.let {
+                    "${it.percent}%  (TCP 6666 raw ${it.raw}, ${it.responseHex})"
+                } ?: packet?.rawUnsigned(97)?.let { "Waiting for TCP 6666 callback. Ignore UDP[97]=$it as percent." }
+                    ?: "Waiting for TCP 6666 callback",
+                confidence = if (remoteBatteryReading != null) "experimental high" else "tracking",
+                source = "Recovered from the legacy SDK getRemoteElectricity callback and validated against 40%, 60%, 80%, and 100% captures."
             )
         )
     }
@@ -280,9 +295,18 @@ object LegacyTelemetryHints {
                 ).ifEmpty { listOf("No live UDP packet or 3014 summary available.") }
             ),
             LegacyTelemetryTarget(
+                fieldName = "ZDDroneState.remoteControlAlarm",
+                description = "Legacy alarm bitmask recovered from the 98-byte UDP state packet. Bit 0x02 is the compass/magnetic calibration failure flag.",
+                confidence = if (snapshot?.remoteControlAlarm != null) "high" else "tracking",
+                currentLeads = listOfNotNull(
+                    latestRemotePacket?.rawUnsigned(77)?.let { "UDP[77] = 0x%02X".format(it) },
+                    snapshot?.remoteControlAlarm?.takeIf { it and 0x02 != 0 }?.let { "MAGNETIC_ERROR bit set." }
+                ).ifEmpty { listOf("No live UDP packet available.") }
+            ),
+            LegacyTelemetryTarget(
                 fieldName = "Remote battery",
-                description = "Legacy remote battery comes from a separate SDK callback, not the main drone-state blob.",
-                confidence = "high",
+                description = "Legacy remote battery comes from the TCP 6666 getRemoteElectricity callback, not the main drone-state blob.",
+                confidence = "experimental high",
                 currentLeads = listOf(
                     latestRemotePacket?.rawUnsigned(97)?.let { "Ignore UDP[97] = $it as a battery percent." }
                         ?: "No live UDP packet available."
@@ -293,8 +317,9 @@ object LegacyTelemetryHints {
 
     fun calibrationChecklist(): List<String> = listOf(
         "Use UDP 6800 for live HUD values: drone power, displayed voltage, satellites, and stabilized Gear.",
-        "Remote battery still needs a separate decode path or manual note because the legacy SDK used a separate callback.",
+        "Remote battery uses the TCP 6666 legacy getRemoteElectricity callback: request 1A 06 AC 06 D2, response 1A 06 AC 03 XX YY.",
         "The current flight-mode label in XIRO Lite follows the validated legacy pattern: 0 satellites => Attitude, nonzero satellites => GPS Mode.",
+        "Compass/magnetic calibration warnings are decoded from remoteControlAlarm bit 0x02 at UDP[77].",
         "Use HJ checkpoints when validating any new candidate against XIRO Assistant.",
         "Keep raw UDP windows visible in Debug Mode when testing switch or satellite transitions, especially UDP[54] and UDP[59]."
     )

@@ -11,6 +11,7 @@ data class LegacyTelemetrySnapshot(
     val gpsText: String?,
     val gearSelection: Int?,
     val switchControlState: Int?,
+    val remoteControlAlarm: Int?,
     val position: FlightCoordinate?,
     val altitudeMeters: Double?,
     val baroHeightMeters: Double?,
@@ -26,6 +27,7 @@ object LegacyTelemetryDecoder {
     private const val RAW_VOLTAGE_U16_OFFSET = 69
     private const val RAW_GEAR_CANDIDATE_OFFSET = 54
     private const val RAW_SWITCH_CONTROL_OFFSET = 59
+    private const val RAW_REMOTE_CONTROL_ALARM_OFFSET = 77
     private const val RAW_BARO_HGT_U16_OFFSET = 47
     private const val RAW_TARGET_HGT_U16_OFFSET = 83
     private const val GEAR_WINDOW_SIZE = 12
@@ -49,6 +51,7 @@ object LegacyTelemetryDecoder {
         val droneBatteryExact = latestPacket.rawU16le(RAW_POWER_U16_OFFSET)?.div(256.0)
         val droneVoltage = latestPacket.rawU16le(RAW_VOLTAGE_U16_OFFSET)?.div(204.8)
         val switchControlState = latestPacket.rawUnsigned(RAW_SWITCH_CONTROL_OFFSET)
+        val remoteControlAlarm = latestPacket.rawUnsigned(RAW_REMOTE_CONTROL_ALARM_OFFSET)
         val gearSelection = deriveGearSelection(packets)
         val position = decodePosition(latestPacket)
         val baroHeight = decodeRelativeHeightMeters(
@@ -84,6 +87,7 @@ object LegacyTelemetryDecoder {
             gpsText = gpsText,
             gearSelection = gearSelection,
             switchControlState = switchControlState,
+            remoteControlAlarm = remoteControlAlarm,
             position = position,
             altitudeMeters = baroHeight,
             baroHeightMeters = baroHeight,

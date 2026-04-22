@@ -75,11 +75,29 @@ class LocalLibraryManager(private val context: Context) {
     }
 
     fun ensureFolders(): XiroFolders {
-        val primary = buildFolders(resolveRootFolder())
-        if (ensureFolderTree(primary)) {
-            Log.d(TAG, "Using shared XIRO root: ${primary.root.absolutePath}")
-            return primary
+        // Try shared storage first if we have permission or are on older Android
+        val sharedRoot = resolveRootFolder()
+        val primary = buildFolders(sharedRoot)
+
+        // On Android 10+ (API 29), writing to the root of SD card usually fails without MANAGE_EXTERNAL_STORAGE
+        // or using Scoped Storage. We attempt it, but check if we actually succeeded.
+        if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED && ensureFolderTree(primary)) {
+            // Verify write permission by trying to actually open a FileOutputStream.
+            // Some devices/versions return true for mkdirs/createNewFile but fail on stream open.
+            val testFile = File(primary.metadata, ".permission_test_${System.currentTimeMillis()}")
+            try {
+                FileOutputStream(testFile).use { it.write(0x00) }
+                if (testFile.exists()) {
+                    testFile.delete()
+                    Log.d(TAG, "Using shared XIRO root: ${primary.root.absolutePath}")
+                    return primary
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Shared root ${primary.root.absolutePath} exists but is not writable: ${e.message}")
+                runCatching { testFile.delete() }
+            }
         }
+
         val fallback = buildFolders(resolveAppPrivateRootFolder())
         ensureFolderTree(fallback)
         Log.w(TAG, "Falling back to app-private XIRO root: ${fallback.root.absolutePath}")
