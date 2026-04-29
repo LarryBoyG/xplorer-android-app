@@ -120,10 +120,9 @@ object LiveFlightTelemetryHub {
 
         _derivedTelemetry.value = _derivedTelemetry.value.copy(
             speedMetersPerSecond = null,
+            latestCoordinate = null,
             altitudeMeters = decodedAltitude,
-            distanceFromHomeMeters = homeCoordinate?.let { home ->
-                position?.let { current -> haversineMeters(home, current) }
-            }
+            distanceFromHomeMeters = null
         )
     }
 

@@ -88,6 +88,10 @@ class CameraViewerActivity : ComponentActivity() {
         enableEdgeToEdge()
         val host = intent.getStringExtra(EXTRA_HOST).orEmpty().ifBlank { "192.168.1.254" }
         val profile = LegacyCompatibilityCatalog.byId(intent.getStringExtra(EXTRA_PROFILE_ID))
+        val initialStreamProfile = intent.getStringExtra(EXTRA_INITIAL_STREAM_PROFILE)
+            ?.let { raw -> StreamProfile.entries.firstOrNull { it.name == raw } }
+            ?: StreamProfile.AUTO
+        val autoDebugCapture = intent.getBooleanExtra(EXTRA_AUTO_DEBUG_CAPTURE, false)
         val selectedHudItems = intent.getStringArrayListExtra(EXTRA_HUD_ITEMS)?.toSet()
             ?: getSharedPreferences(UI_PREFS_NAME, MODE_PRIVATE)
                 .getStringSet(LIVE_VIEW_HUD_PREF_KEY, DEFAULT_LIVE_VIEW_HUD_ITEMS)
@@ -98,6 +102,8 @@ class CameraViewerActivity : ComponentActivity() {
                 CameraViewerScreen(
                     host = host,
                     profile = profile,
+                    initialStreamProfile = initialStreamProfile,
+                    autoDebugCapture = autoDebugCapture,
                     selectedHudItems = normalizeHudSelection(selectedHudItems),
                     onExit = { finish() }
                 )
@@ -109,19 +115,173 @@ class CameraViewerActivity : ComponentActivity() {
         const val EXTRA_HOST = "extra_host"
         const val EXTRA_PROFILE_ID = "extra_profile_id"
         const val EXTRA_HUD_ITEMS = "extra_hud_items"
+        const val EXTRA_INITIAL_STREAM_PROFILE = "extra_initial_stream_profile"
+        const val EXTRA_AUTO_DEBUG_CAPTURE = "extra_auto_debug_capture"
     }
 }
+
+private enum class ViewerCameraSettingsTab(val title: String) {
+    CAMERA_PARAMETER("Camera Parameter"),
+    PICTURE_PARAMETER("Picture Parameter"),
+    PHOTOGRAPH_SETTING("Photograph Setting"),
+    SYSTEM_SETTINGS("System settings")
+}
+
+private enum class ViewerCameraSettingEvidence(val label: String) {
+    VERIFIED("Capture verified"),
+    OBSERVED("Capture observed"),
+    PENDING("Command pending")
+}
+
+private enum class ViewerInteractiveSettingKey {
+    PREVIEW_RESOLUTION,
+    IMAGE_RESOLUTION,
+    ANTI_BLINK
+}
+
+private data class ViewerCameraSettingRow(
+    val label: String,
+    val currentValue: String,
+    val options: List<String> = emptyList(),
+    val selectedOption: String = currentValue,
+    val evidence: ViewerCameraSettingEvidence = ViewerCameraSettingEvidence.PENDING,
+    val note: String = "",
+    val actionKey: ViewerInteractiveSettingKey? = null
+)
+
+private fun viewerCameraSettingsFor(
+    tab: ViewerCameraSettingsTab,
+    previewResolution: String = "240p",
+    imageResolution: String = "4320x3240",
+    antiBlink: String = "50HZ"
+): List<ViewerCameraSettingRow> =
+    when (tab) {
+        ViewerCameraSettingsTab.CAMERA_PARAMETER -> listOf(
+            ViewerCameraSettingRow(
+                label = "ISO",
+                currentValue = "Auto",
+                options = listOf("Auto", "100", "200", "400", "800", "1600"),
+                note = "Legacy app default observed in Live View. On-wire command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Exposure",
+                currentValue = "+0",
+                options = listOf("+2.0", "+1.7", "+1.3", "+1.0", "+0.7", "+0.3", "+0", "-0.3", "-0.7", "-1.0", "-1.3", "-1.7", "-2.0"),
+                note = "Legacy app default observed in Live View. On-wire command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "White Balance",
+                currentValue = "Auto",
+                options = listOf("Auto", "Cloudy", "Daylight", "Flourescent", "Tungsten"),
+                note = "Legacy app default observed in Live View. On-wire command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Contrast",
+                currentValue = "Standard",
+                options = listOf("High", "Standard", "Low"),
+                note = "Legacy app default observed in Live View. On-wire command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Metering Mode",
+                currentValue = "Average Metering",
+                options = listOf("Center-Weighted", "Multi-Spots", "Spot-Metering", "Average Metering"),
+                note = "Legacy app default observed in Live View. On-wire command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Anti-blink",
+                currentValue = antiBlink,
+                options = listOf("50HZ", "60HZ"),
+                selectedOption = antiBlink,
+                evidence = ViewerCameraSettingEvidence.VERIFIED,
+                note = "Capture verified. Legacy sends cmd 3080 with par 0 = 50HZ and par 1 = 60HZ. The live RTSP stream stays on the same SDP while Anti-blink changes.",
+                actionKey = ViewerInteractiveSettingKey.ANTI_BLINK
+            )
+        )
+
+        ViewerCameraSettingsTab.PICTURE_PARAMETER -> listOf(
+            ViewerCameraSettingRow(
+                label = "Preview Resolution",
+                currentValue = previewResolution,
+                options = listOf("480p", "360p", "240p"),
+                selectedOption = previewResolution,
+                evidence = ViewerCameraSettingEvidence.VERIFIED,
+                note = "Capture verified. Legacy wraps cmd 2010 with cmd 2015 apply steps and fully rebuilds RTSP. Captured mapping: 480p = par 2, 360p = par 3, 240p = par 4. SDP sizes: 240p = 320x240, 360p = 640x360, 480p = 640x480.",
+                actionKey = ViewerInteractiveSettingKey.PREVIEW_RESOLUTION
+            ),
+            ViewerCameraSettingRow(
+                label = "Image Resolution",
+                currentValue = imageResolution,
+                options = listOf("4320x3240", "4032x3024", "3648x2736"),
+                selectedOption = imageResolution,
+                evidence = ViewerCameraSettingEvidence.OBSERVED,
+                note = "Capture observed. Legacy sends cmd 1002 when this changes and still-photo resolution updates, but the live RTSP stream does not restart. Captured mapping: 4320x3240 = par 0, 4032x3024 = par 1, 3648x2736 = par 2.",
+                actionKey = ViewerInteractiveSettingKey.IMAGE_RESOLUTION
+            ),
+            ViewerCameraSettingRow(
+                label = "Image Format",
+                currentValue = "JPEG",
+                options = listOf("JPEG", "RAW", "JPEG+RAW"),
+                note = "Legacy app default observed in Live View. Command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Movie Resolution",
+                currentValue = "1920x1080",
+                options = listOf("1920x1080", "1280x720", "848x480", "640x480"),
+                note = "Legacy UI exposes this separately from Preview Resolution. Recorded-movie command mapping is still pending."
+            )
+        )
+
+        ViewerCameraSettingsTab.PHOTOGRAPH_SETTING -> listOf(
+            ViewerCameraSettingRow(
+                label = "Set interval timer",
+                currentValue = "OFF",
+                options = listOf("OFF", "1 sec", "2 sec", "5 sec", "10 sec", "30 sec", "60 sec"),
+                note = "Legacy app default observed in Live View. Command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Continuous shooting",
+                currentValue = "OFF",
+                options = listOf("OFF", "3", "4", "5"),
+                note = "Legacy app default observed in Live View. Command mapping is still pending."
+            ),
+            ViewerCameraSettingRow(
+                label = "Loop",
+                currentValue = "OFF",
+                options = listOf("OFF", "3 min", "5 min", "10 min"),
+                note = "Legacy app default observed in Live View. Command mapping is still pending."
+            )
+        )
+
+        ViewerCameraSettingsTab.SYSTEM_SETTINGS -> listOf(
+            ViewerCameraSettingRow(
+                label = "Camera Factory Reset",
+                currentValue = "Reset Button",
+                options = listOf("Reset"),
+                evidence = ViewerCameraSettingEvidence.OBSERVED,
+                note = "Capture observed. The legacy app issues cmd 3081 here, then follows with 3014/3012 polling and an observed cmd 2015 par=0 apply step. This stays disabled in XIRO Lite until the destructive flow is proven safely."
+            ),
+            ViewerCameraSettingRow(
+                label = "Format SD card",
+                currentValue = "Format Button",
+                options = listOf("Format"),
+                note = "Dangerous legacy action. Command mapping is intentionally left pending until it is proven safely."
+            )
+        )
+    }
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
 private fun CameraViewerScreen(
     host: String,
     profile: LegacyDroneProfile,
+    initialStreamProfile: StreamProfile,
+    autoDebugCapture: Boolean,
     selectedHudItems: Set<String>,
     onExit: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val cameraMediaController = remember(profile) { CameraMediaController(profile) }
+    val cameraInitProbe = remember { CameraInitProbe() }
     val context = LocalContext.current
     val detector = remember { DroneNetworkDetector(context) }
     val localLibraryManager = remember { LocalLibraryManager(context) }
@@ -129,6 +289,7 @@ private fun CameraViewerScreen(
     val hjLogRecorder = remember { HjLogRecorder(localLibraryManager) }
     val exportHelper = remember { ExportHelper(context) }
     val captureFeedback = remember { CaptureFeedback(context) }
+    val rootedLiveViewCaptureManager = remember { RootedLiveViewCaptureManager(context, localLibraryManager) }
     val rtspController = remember { RtspPlayerController() }
     val relayProbe = remember { RelayProbe() }
     val rtspUrl = profile.primaryRtspUrl(host)
@@ -156,6 +317,7 @@ private fun CameraViewerScreen(
     var hjLogStatus by remember { mutableStateOf("Idle") }
     var relayProbeResults by remember { mutableStateOf(listOf<CommandResult>()) }
     var cameraStorageResults by remember { mutableStateOf(listOf<TelemetryResult>()) }
+    var telemetryNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val viewerUiState = BetaInference.buildUiState(
         networkInfo = networkInfo,
         telemetryResults = cameraStorageResults,
@@ -165,18 +327,29 @@ private fun CameraViewerScreen(
         remoteBatteryReading = remoteBatteryReading,
         relayProbeResults = relayProbeResults,
         flightLogStatusText = hjLogStatus,
-        measurementUnit = measurementUnit
+        measurementUnit = measurementUnit,
+        nowMs = telemetryNowMs
     )
     val viewerHudItems = viewerUiState.preflight.filter { it.label in selectedHudItems }
+    val usesLegacyXplorerLiveViewPatch = remember(profile.id) {
+        profile.id == LegacyCompatibilityCatalog.xplorer.id ||
+            profile.id == LegacyCompatibilityCatalog.xplorer4k.id
+    }
 
     var captureMode by remember { mutableStateOf(CaptureMode.PHOTO) }
     var isRecording by remember { mutableStateOf(false) }
     var recordingStartedAtMs by remember { mutableLongStateOf(0L) }
     var recordingElapsedMs by remember { mutableLongStateOf(0L) }
-    var streamProfile by remember(profile.id) { mutableStateOf(StreamProfile.AUTO) }
-    var viewerSettingsMenuExpanded by remember { mutableStateOf(false) }
+    var streamProfile by remember(profile.id, initialStreamProfile) { mutableStateOf(initialStreamProfile) }
+    var viewerSettingsPanelVisible by remember { mutableStateOf(false) }
+    var viewerCameraSettingsTab by remember { mutableStateOf(ViewerCameraSettingsTab.CAMERA_PARAMETER) }
+    var viewerPreviewResolution by remember { mutableStateOf("240p") }
+    var viewerImageResolution by remember { mutableStateOf("4320x3240") }
+    var viewerAntiBlink by remember { mutableStateOf("50HZ") }
     var reloadToken by remember { mutableIntStateOf(0) }
-    var playerActive by remember { mutableStateOf(true) }
+    var playerActive by remember(profile.id) {
+        mutableStateOf(!usesLegacyXplorerLiveViewPatch)
+    }
     var recoveryMessage by remember { mutableStateOf<String?>(null) }
     var lastOperation by remember { mutableStateOf<CameraOperationResult?>(null) }
     var debugExpanded by remember { mutableStateOf(false) }
@@ -189,16 +362,23 @@ private fun CameraViewerScreen(
     var autoRecoveryPending by remember { mutableStateOf(false) }
     var commandTransitionOverlayActive by remember { mutableStateOf(false) }
     var autoRecoveryMessageToken by remember { mutableIntStateOf(0) }
+    var hardRtspRestartToken by remember { mutableIntStateOf(0) }
     var lastRecoveryWasPreemptive by remember { mutableStateOf(false) }
+    var liveFrameRendered by remember { mutableStateOf(false) }
+    var clockSyncAttempted by remember { mutableStateOf(false) }
+    var automaticTcpFallbackUsed by remember { mutableStateOf(false) }
+    var previewKickToken by remember { mutableIntStateOf(0) }
+    var debugCaptureStatus by remember { mutableStateOf("") }
 
     val logs = remember { mutableStateListOf<String>() }
     val debugModeEnabled = uiPrefs.getBoolean("debug_mode_enabled", false)
-    val supportsStabilityToggle = profile.id == LegacyCompatibilityCatalog.xplorer.id
+    val supportsStabilityToggle = usesLegacyXplorerLiveViewPatch
     val viewerWarnings = buildList {
         addAll(
             BetaInference.buildFlightWarnings(
                 recentRemotePackets = liveTelemetryPackets,
-                measurementUnit = measurementUnit
+                measurementUnit = measurementUnit,
+                nowMs = telemetryNowMs
             )
         )
         if (autoRecoveryPending && !lastRecoveryWasPreemptive && recoveryMessage != null) {
@@ -225,8 +405,68 @@ private fun CameraViewerScreen(
     }
 
     fun log(message: String) {
-        logs.add(0, "${cameraTimestamp(System.currentTimeMillis())}  $message")
+        val rendered = "${cameraTimestamp(System.currentTimeMillis())}  $message"
+        logs.add(0, rendered)
         while (logs.size > 80) logs.removeAt(logs.lastIndex)
+        Log.d("XiroViewer", message)
+    }
+
+    suspend fun primeLegacyLiveView(reason: String) {
+        if (!usesLegacyXplorerLiveViewPatch) return
+        log("$reason: running XIRO Xplorer live-view init sequence")
+        val initResults = cameraInitProbe.run(host)
+        val initEntries = initResults.map { result ->
+            CameraActionResult(
+                action = result.label,
+                url = result.url,
+                status = result.status,
+                body = result.preview
+            )
+        }
+        val initSuccess = initResults.any { it.status.startsWith("HTTP 2") }
+        val initSummary = if (initSuccess) {
+            "Legacy live-view init completed with ${initResults.count { it.status.startsWith("HTTP") }} camera command response(s)."
+        } else {
+            "Legacy live-view init did not receive an HTTP response from the camera."
+        }
+        lastOperation = CameraOperationResult(
+            title = "Live View Init",
+            success = initSuccess,
+            entries = initEntries,
+            summary = initSummary
+        )
+        initResults.forEach { result ->
+            log("${result.label}: ${result.status}")
+        }
+        delay(250)
+    }
+
+    fun scheduleLegacyPreviewKick(reason: String) {
+        if (!usesLegacyXplorerLiveViewPatch) return
+        previewKickToken += 1
+        val scheduledToken = previewKickToken
+        scope.launch {
+            delay(550)
+            if (
+                scheduledToken != previewKickToken ||
+                !playerActive ||
+                isRecording
+            ) {
+                return@launch
+            }
+            clockSyncAttempted = true
+            log("$reason: sending XIRO Xplorer post-PLAY live-view sequence")
+            val previewPrep = cameraMediaController.runLegacyPostPlayPreviewSequence(host)
+            lastOperation = previewPrep
+            log("${previewPrep.title}: ${previewPrep.summary}")
+        }
+    }
+
+    DisposableEffect(Unit) {
+        LiveViewSessionRegistry.setViewerActive(true)
+        onDispose {
+            LiveViewSessionRegistry.setViewerActive(false)
+        }
     }
 
     fun clearAutoRecoveryOverlay(reason: String) {
@@ -236,6 +476,28 @@ private fun CameraViewerScreen(
         recoveryMessage = null
         lastRecoveryWasPreemptive = false
         log(reason)
+    }
+
+    fun scheduleHardRtspRestart(reason: String, messageToken: Int) {
+        hardRtspRestartToken += 1
+        val restartToken = hardRtspRestartToken
+        scope.launch {
+            log("RTSP hard restart: $reason")
+            playerActive = false
+            delay(1_500)
+            if (
+                !autoRecoveryPending ||
+                autoRecoveryMessageToken != messageToken ||
+                hardRtspRestartToken != restartToken
+            ) {
+                return@launch
+            }
+            primeLegacyLiveView("RTSP hard restart")
+            reloadToken += 1
+            playerActive = true
+            scheduleLegacyPreviewKick("RTSP hard restart")
+            log("RTSP hard restart: player recreated")
+        }
     }
 
     fun clearCommandTransitionOverlay(reason: String) {
@@ -252,6 +514,16 @@ private fun CameraViewerScreen(
         if (now - lastAutoReloadAtMs < 15_000L) return
         lastAutoReloadAtMs = now
         val isPreemptiveRefresh = reason.contains("preemptive", ignoreCase = true)
+        if (
+            usesLegacyXplorerLiveViewPatch &&
+            !liveFrameRendered &&
+            !streamProfile.forceRtpTcp &&
+            !automaticTcpFallbackUsed
+        ) {
+            automaticTcpFallbackUsed = true
+            streamProfile = StreamProfile.STABILITY
+            log("RTSP startup recovery: switching XIRO Xplorer to Stability (TCP interleaved) after no first frame arrived over legacy UDP")
+        }
         lastRecoveryWasPreemptive = isPreemptiveRefresh
         recoveryFrameBitmap = rtspController.captureFrame()?.copy(Bitmap.Config.ARGB_8888, false)
         autoRecoveryPending = true
@@ -259,7 +531,7 @@ private fun CameraViewerScreen(
         val messageToken = autoRecoveryMessageToken
         recoveryMessage = null
         log("RTSP session watcher: $reason")
-        reloadToken += 1
+        scheduleHardRtspRestart(reason, messageToken)
         scope.launch {
             delay(2_000)
             if (!autoRecoveryPending || autoRecoveryMessageToken != messageToken) return@launch
@@ -269,6 +541,107 @@ private fun CameraViewerScreen(
                 "Live feed stalled. Reloading stream..."
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            telemetryNowMs = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+
+    fun ageText(timestampMs: Long): String {
+        if (timestampMs <= 0L) return "--"
+        val ageSeconds = (System.currentTimeMillis() - timestampMs).coerceAtLeast(0L) / 1000.0
+        return String.format(Locale.US, "%.1fs ago", ageSeconds)
+    }
+
+    fun formatExportDouble(value: Double?, decimals: Int = 1, suffix: String = ""): String {
+        value ?: return "--"
+        val pattern = "%.${decimals}f"
+        return String.format(Locale.US, pattern, value) + suffix
+    }
+
+    fun formatExportPercent(value: Double?): String =
+        value?.let { String.format(Locale.US, "%.1f%%", it) } ?: "--"
+
+    fun StringBuilder.appendViewerDiagnostics() {
+        val snapshot = LegacyTelemetryDecoder.decode(liveTelemetryPackets)
+        val latestPacket = liveTelemetryPackets.firstOrNull()
+        val latestPacketAgeMs = latestPacket?.let { System.currentTimeMillis() - it.timestampMs }
+        val telemetryFresh = latestPacketAgeMs != null && latestPacketAgeMs <= 5_000L
+        appendLine("STREAM / NETWORK")
+        appendLine("----------------------------------------")
+        appendLine("Stream Profile: ${streamProfile.label}")
+        appendLine("RTSP Transport: ${streamProfile.transportLabel}")
+        appendLine("RTSP Timeout: ${streamProfile.timeoutMs} ms")
+        appendLine("Network Local IP: ${networkInfo.localIp ?: "--"}")
+        appendLine("Network Gateway: ${networkInfo.gatewayIp ?: "--"}")
+        appendLine("Guessed Drone IP: ${networkInfo.guessedDroneIp ?: "--"}")
+        appendLine("Phone Wi-Fi Signal: ${networkInfo.wifiSignalText}")
+        if (networkInfo.notes.isNotEmpty()) appendLine("Network Notes: ${networkInfo.notes.joinToString("; ")}")
+        appendLine()
+
+        appendLine("LIVE TELEMETRY SNAPSHOT")
+        appendLine("----------------------------------------")
+        appendLine("Recent UDP Packets: ${liveTelemetryPackets.size}")
+        appendLine("Latest UDP Age: ${latestPacket?.timestampMs?.let(::ageText) ?: "--"}")
+        appendLine("Telemetry Fresh: ${if (telemetryFresh) "yes" else "no"}")
+        appendLine("GPS Sat: ${viewerUiState.droneState.satelliteText}")
+        appendLine("Flight Mode: ${viewerUiState.droneState.flightModeText}")
+        appendLine("Aircraft Power: ${viewerUiState.droneState.droneBatteryText}")
+        appendLine("Aircraft Voltage: ${if (telemetryFresh) formatExportDouble(snapshot?.droneVoltageVolts, 2, " V") else "Stale"}")
+        appendLine("Gear: ${viewerUiState.droneState.gearText}")
+        appendLine("Baro HGT / Elevation: ${viewerUiState.droneState.baroHeightText}")
+        appendLine("Target HGT / Target Elevation: ${viewerUiState.droneState.targetHeightText}")
+        appendLine("Distance From Home: ${viewerUiState.droneState.distanceText}")
+        appendLine("Speed: ${viewerUiState.droneState.speedText}")
+        appendLine("Remote Control Alarm UDP[77]: ${if (telemetryFresh) snapshot?.remoteControlAlarm?.let { "0x%02X".format(it) } ?: "--" else "Stale"}")
+        appendLine("Relay-to-Camera Signal: ${viewerUiState.droneState.relaySignalText}")
+        appendLine("SD Card: ${viewerUiState.droneState.sdCardText}")
+        appendLine(
+            "Remote Battery: " + (remoteBatteryReading?.let {
+                "${it.percent}% raw=${it.raw} age=${ageText(it.timestampMs)} response=${it.responseHex}"
+            } ?: "--")
+        )
+        appendLine("Flight Log: $hjLogStatus")
+        appendLine()
+
+        appendLine("RECENT UDP 6800 PACKETS")
+        appendLine("----------------------------------------")
+        if (liveTelemetryPackets.isEmpty()) {
+            appendLine("(none captured)")
+        } else {
+            liveTelemetryPackets.take(12).forEachIndexed { index, packet ->
+                val packetSnapshot = LegacyTelemetryDecoder.decode(packet)
+                val changedText = packet.changedByteIndexes.take(16).joinToString(", ")
+                    .ifBlank { "(none / first packet)" }
+                appendLine(
+                    "#${index + 1} ${cameraTimestamp(packet.timestampMs)} age=${ageText(packet.timestampMs)} " +
+                        "src=${packet.sourceIp}:${packet.sourcePort} len=${packet.length} " +
+                        "state=${packet.stateGuess?.label ?: "Unknown"}"
+                )
+                appendLine(
+                    "  sats=${packetSnapshot?.satellites ?: "--"} " +
+                        "power=${packetSnapshot?.droneBatteryPercentExact?.let(::formatExportPercent) ?: "--"} " +
+                        "voltage=${formatExportDouble(packetSnapshot?.droneVoltageVolts, 2, " V")} " +
+                        "baro=${formatExportDouble(packetSnapshot?.baroHeightMeters, 1, " m")} " +
+                        "target=${formatExportDouble(packetSnapshot?.targetHeightMeters, 1, " m")} " +
+                        "gear=${packetSnapshot?.gearSelection ?: "--"} " +
+                        "alarm=${packetSnapshot?.remoteControlAlarm?.let { "0x%02X".format(it) } ?: "--"}"
+                )
+                appendLine("  changed=$changedText")
+                appendLine("  hex=${packet.hexPreview}")
+            }
+        }
+        appendLine()
+
+        appendLine("STATUS HUD SNAPSHOT")
+        appendLine("----------------------------------------")
+        viewerUiState.preflight.forEach { item ->
+            appendLine("- ${item.label}: ${item.value} (${if (item.ok) "ok" else "attention"}) ${item.detail}")
+        }
+        appendLine()
     }
 
     fun buildViewerActionExportText(
@@ -293,6 +666,7 @@ private fun CameraViewerScreen(
         appendLine("Storage: ${localLibraryManager.activeRootPath()}")
         appendLine("Flight Log: $hjLogStatus")
         appendLine()
+        appendViewerDiagnostics()
         appendLine("LAST OPERATION")
         appendLine("----------------------------------------")
         if (operation == null) {
@@ -455,6 +829,77 @@ private fun CameraViewerScreen(
         }
     }
 
+    fun CameraOperationResult.acceptedByCamera(): Boolean =
+        entries.any { it.status.startsWith("HTTP 200") }
+
+    suspend fun applyPreviewResolution(option: String) {
+        if (viewerPreviewResolution == option) return
+        runObservedViewerAction("Preview Resolution $option") {
+            cycleRtspSessionForCommand("Preview Resolution") {
+                val operation = cameraMediaController.setPreviewResolution(host, option)
+                lastOperation = operation
+                log("${operation.title}: ${operation.summary}")
+                if (operation.acceptedByCamera()) {
+                    viewerPreviewResolution = option
+                    log("Preview resolution updated to $option")
+                    showTransientViewerMessage(
+                        if (debugModeEnabled) {
+                            "Preview resolution command sent"
+                        } else {
+                            "Preview Resolution $option"
+                        }
+                    )
+                } else {
+                    showTransientViewerMessage("Preview resolution command failed")
+                }
+            }
+        }
+    }
+
+    suspend fun applyImageResolution(option: String) {
+        if (viewerImageResolution == option) return
+        runObservedViewerAction("Image Resolution $option") {
+            val operation = cameraMediaController.setImageResolution(host, option)
+            lastOperation = operation
+            log("${operation.title}: ${operation.summary}")
+            if (operation.acceptedByCamera()) {
+                viewerImageResolution = option
+                log("Image resolution updated to $option")
+                showTransientViewerMessage(
+                    if (debugModeEnabled) {
+                        "Image resolution command sent"
+                    } else {
+                        "Image Resolution $option"
+                    }
+                )
+            } else {
+                showTransientViewerMessage("Image resolution command failed")
+            }
+        }
+    }
+
+    suspend fun applyAntiBlink(option: String) {
+        if (viewerAntiBlink == option) return
+        runObservedViewerAction("Anti-blink $option") {
+            val operation = cameraMediaController.setAntiBlink(host, option)
+            lastOperation = operation
+            log("${operation.title}: ${operation.summary}")
+            if (operation.acceptedByCamera()) {
+                viewerAntiBlink = option
+                log("Anti-blink updated to $option")
+                showTransientViewerMessage(
+                    if (debugModeEnabled) {
+                        "Anti-blink command sent"
+                    } else {
+                        "Anti-blink $option"
+                    }
+                )
+            } else {
+                showTransientViewerMessage("Anti-blink command failed")
+            }
+        }
+    }
+
     suspend fun runDebugCaptureCommand(
         command: DebugCaptureCommand,
         refreshLibraryAfterRecovery: Boolean
@@ -573,10 +1018,13 @@ private fun CameraViewerScreen(
             appendLine("Host: $host")
             appendLine("Profile: ${profile.displayName}")
             appendLine("RTSP URL: $rtspUrl")
+            appendLine("Stream Profile: ${streamProfile.label}")
+            appendLine("RTSP Transport: ${streamProfile.transportLabel}")
             appendLine("Mode: ${captureMode.name}")
             appendLine("Recording: $isRecording")
             appendLine("Storage: ${localLibraryManager.activeRootPath()}")
             appendLine()
+            appendViewerDiagnostics()
             lastOperation?.let {
                 appendLine("Last Operation: ${it.title}")
                 appendLine("Summary: ${it.summary}")
@@ -646,12 +1094,54 @@ private fun CameraViewerScreen(
         hjLogStatus = hjState.statusText
         log("Flight log started: ${hjState.activeFile?.absolutePath ?: hjState.statusText}")
         log("Camera viewer opened")
+        log("Initial stream profile: ${streamProfile.label} (${streamProfile.transportLabel})")
+        if (debugModeEnabled && autoDebugCapture) {
+            val captureResult = rootedLiveViewCaptureManager.startCapture(
+                host = host,
+                relayHost = relayHost,
+                profile = profile,
+                streamProfile = streamProfile,
+                appPid = android.os.Process.myPid()
+            )
+            captureResult.onSuccess { session ->
+                debugCaptureStatus = "Combo log running: ${session.transportFolderName} -> ${session.folder.absolutePath}"
+                log(
+                    "Debug combo capture started: ${session.transportFolderName} " +
+                        "pcap=${session.pcapFile.name} logcat=${session.logcatFile.name}"
+                )
+            }.onFailure { error ->
+                debugCaptureStatus = "Combo log failed: ${error.message ?: "Unknown error"}"
+                log(debugCaptureStatus)
+            }
+        }
         captureMode = CaptureMode.PHOTO
         clearRecordingState()
+        automaticTcpFallbackUsed = false
         log("Viewer opened with PHOTO selected by default")
-        if (profile.id == LegacyCompatibilityCatalog.xplorer.id) {
-            delay(250)
-            log("Syncing XIRO Xplorer camera clock with local device time")
+        if (usesLegacyXplorerLiveViewPatch) {
+            liveFrameRendered = false
+            clockSyncAttempted = false
+            log("Viewer startup: delaying RTSP until XIRO Xplorer live-view init completes")
+            primeLegacyLiveView("Viewer startup")
+            reloadToken += 1
+            playerActive = true
+            scheduleLegacyPreviewKick("Viewer startup")
+            log("Viewer startup: starting RTSP after XIRO Xplorer init")
+        }
+    }
+
+    LaunchedEffect(liveFrameRendered, playerActive, autoRecoveryPending, profile.id) {
+        if (
+            usesLegacyXplorerLiveViewPatch &&
+            liveFrameRendered &&
+            playerActive &&
+            !autoRecoveryPending &&
+            !clockSyncAttempted
+        ) {
+            clockSyncAttempted = true
+            delay(8_000)
+            if (!playerActive || autoRecoveryPending) return@LaunchedEffect
+            log("Syncing XIRO Xplorer camera clock after live view stabilized")
             val syncResult = cameraMediaController.syncClock(host)
             lastOperation = syncResult
             log("${syncResult.title}: ${syncResult.summary}")
@@ -695,20 +1185,33 @@ private fun CameraViewerScreen(
     LaunchedEffect(networkInfo.localIp, relayHost) {
         if (networkInfo.localIp?.startsWith("192.168.2.") != true) return@LaunchedEffect
         while (true) {
-            relayProbeResults = relayProbe.probeSettingsRoot(relayHost)
-            delay(8_000)
+            relayProbeResults = relayProbe.probeSettingsRootLiveView(relayHost)
+            delay(10_000)
         }
     }
 
-    LaunchedEffect(networkInfo.localIp, host) {
+    LaunchedEffect(networkInfo.localIp, host, playerActive, profile.id) {
         if (networkInfo.localIp.isNullOrBlank()) {
             cameraStorageResults = emptyList()
             return@LaunchedEffect
         }
 
-        while (true) {
-            cameraStorageResults = telemetryProbe.readCameraStorage(host)
-            delay(5_000)
+        if (usesLegacyXplorerLiveViewPatch && playerActive) {
+            if (cameraStorageResults.isEmpty()) {
+                cameraStorageResults = telemetryProbe.readCameraStorage(host)
+            }
+            while (true) {
+                val keepAlive = telemetryProbe.readLiveViewKeepAlive(host)
+                if (!keepAlive.status.startsWith("HTTP 200")) {
+                    log("Live View keepalive ${keepAlive.label}: ${keepAlive.status}")
+                }
+                delay(5_000)
+            }
+        } else {
+            while (true) {
+                cameraStorageResults = telemetryProbe.readCameraStorage(host)
+                delay(10_000)
+            }
         }
     }
 
@@ -718,16 +1221,25 @@ private fun CameraViewerScreen(
         }
     }
 
-    LaunchedEffect(autoRecoveryPending, playerActive, reloadToken) {
+    LaunchedEffect(autoRecoveryPending, playerActive, reloadToken, streamProfile, liveFrameRendered) {
         if (!autoRecoveryPending || !playerActive) return@LaunchedEffect
         while (autoRecoveryPending && playerActive) {
-            delay(8_000)
+            val retryDelayMs = if (streamProfile.forceRtpTcp && !liveFrameRendered) {
+                maxOf(12_000L, streamProfile.startupRecoveryMs)
+            } else {
+                12_000L
+            }
+            delay(retryDelayMs)
             if (!autoRecoveryPending || !playerActive) break
             if (!lastRecoveryWasPreemptive) {
                 recoveryMessage = "Camera link interrupted. Retrying live feed..."
             }
-            log("Automatic RTSP recovery still pending; retrying the live feed again")
-            reloadToken += 1
+            if (streamProfile.forceRtpTcp && !liveFrameRendered) {
+                log("Automatic RTSP recovery still pending; holding the TCP stability session open longer before another hard restart")
+            } else {
+                log("Automatic RTSP recovery still pending; hard restarting the live feed again")
+            }
+            scheduleHardRtspRestart("automatic recovery retry while player stayed unavailable", autoRecoveryMessageToken)
         }
     }
 
@@ -741,7 +1253,11 @@ private fun CameraViewerScreen(
     }
 
     BackHandler(enabled = !exitInProgress) {
-        scope.launch { requestViewerExit() }
+        if (viewerSettingsPanelVisible) {
+            viewerSettingsPanelVisible = false
+        } else {
+            scope.launch { requestViewerExit() }
+        }
     }
 
     CameraFullScreenSystemBars(enabled = true)
@@ -792,7 +1308,9 @@ private fun CameraViewerScreen(
                 streamProfile = streamProfile,
                 rtspController = rtspController,
                 recoveryFrameBitmap = recoveryFrameBitmap,
+                debugRtspMessages = debugModeEnabled,
                 onFirstFrameRendered = {
+                    liveFrameRendered = true
                     if (commandTransitionOverlayActive) {
                         clearCommandTransitionOverlay("RTSP stream resumed after camera command")
                     }
@@ -822,7 +1340,9 @@ private fun CameraViewerScreen(
                 streamProfile = streamProfile,
                 rtspController = rtspController,
                 recoveryFrameBitmap = recoveryFrameBitmap,
+                debugRtspMessages = debugModeEnabled,
                 onFirstFrameRendered = {
+                    liveFrameRendered = true
                     if (commandTransitionOverlayActive) {
                         clearCommandTransitionOverlay("RTSP stream resumed after camera command")
                     }
@@ -914,45 +1434,15 @@ private fun CameraViewerScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalAlignment = Alignment.End
                 ) {
-                    Box {
-                        XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
-                            IconButton(
-                                onClick = { viewerSettingsMenuExpanded = true }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Settings,
-                                    contentDescription = "Live View Settings",
-                                    tint = Color.White
-                                )
-                            }
-                        }
-                        DropdownMenu(
-                            expanded = viewerSettingsMenuExpanded,
-                            onDismissRequest = { viewerSettingsMenuExpanded = false }
+                    XiroIconSurface(shape = RoundedCornerShape(16.dp)) {
+                        IconButton(
+                            onClick = { viewerSettingsPanelVisible = !viewerSettingsPanelVisible }
                         ) {
-                            if (supportsStabilityToggle) {
-                                DropdownMenuItem(
-                                    text = { Text("Stream: Auto") },
-                                    onClick = {
-                                        viewerSettingsMenuExpanded = false
-                                        streamProfile = StreamProfile.AUTO
-                                        log("Live preview stream profile set to ${streamProfile.label}")
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Stream: Stability") },
-                                    onClick = {
-                                        viewerSettingsMenuExpanded = false
-                                        streamProfile = StreamProfile.STABILITY
-                                        log("Live preview stream profile set to ${streamProfile.label}")
-                                    }
-                                )
-                            } else {
-                                DropdownMenuItem(
-                                    text = { Text("No camera settings yet") },
-                                    onClick = { viewerSettingsMenuExpanded = false }
-                                )
-                            }
+                            Icon(
+                                imageVector = Icons.Outlined.Settings,
+                                contentDescription = "Live View Settings",
+                                tint = Color.White
+                            )
                         }
                     }
                     if (debugModeEnabled) {
@@ -961,6 +1451,37 @@ private fun CameraViewerScreen(
                     }
                 }
             }
+        }
+
+        AnimatedVisibility(
+            visible = viewerSettingsPanelVisible,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            ViewerLiveSettingsPanel(
+                showTransportControls = debugModeEnabled && supportsStabilityToggle,
+                streamProfile = streamProfile,
+                onSelectStreamProfile = { selectedProfile ->
+                    streamProfile = selectedProfile
+                    automaticTcpFallbackUsed = false
+                    log("Live preview stream profile set to ${streamProfile.label} (${streamProfile.transportLabel})")
+                },
+                selectedTab = viewerCameraSettingsTab,
+                onSelectTab = { viewerCameraSettingsTab = it },
+                previewResolution = viewerPreviewResolution,
+                imageResolution = viewerImageResolution,
+                antiBlink = viewerAntiBlink,
+                controlsEnabled = !actionObservationInProgress,
+                onSettingSelected = { settingKey, option ->
+                    scope.launch {
+                        when (settingKey) {
+                            ViewerInteractiveSettingKey.PREVIEW_RESOLUTION -> applyPreviewResolution(option)
+                            ViewerInteractiveSettingKey.IMAGE_RESOLUTION -> applyImageResolution(option)
+                            ViewerInteractiveSettingKey.ANTI_BLINK -> applyAntiBlink(option)
+                        }
+                    }
+                },
+                onDismiss = { viewerSettingsPanelVisible = false }
+            )
         }
 
         if (viewerWarnings.isNotEmpty()) {
@@ -978,18 +1499,30 @@ private fun CameraViewerScreen(
             }
         }
 
-        if (debugModeEnabled && actionExportStatus.isNotBlank()) {
+        if (debugModeEnabled && (actionExportStatus.isNotBlank() || debugCaptureStatus.isNotBlank())) {
             XiroRaisedCard(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 72.dp),
                 containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
-                Text(
-                    text = actionExportStatus,
+                Column(
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    color = Color.White
-                )
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (debugCaptureStatus.isNotBlank()) {
+                        Text(
+                            text = debugCaptureStatus,
+                            color = Color.White
+                        )
+                    }
+                    if (actionExportStatus.isNotBlank()) {
+                        Text(
+                            text = actionExportStatus,
+                            color = Color.White
+                        )
+                    }
+                }
             }
         }
 
@@ -1008,53 +1541,57 @@ private fun CameraViewerScreen(
             }
         }
 
-        Column(
+        AnimatedVisibility(
+            visible = !viewerSettingsPanelVisible,
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 22.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+                .padding(end = 22.dp)
         ) {
-            XiroPillSurface(
-                modifier = Modifier
-                    .wrapContentWidth()
-                    .clickable(enabled = !actionObservationInProgress && !isRecording) {
-                        scope.launch {
-                            switchViewerCaptureMode(
-                                if (captureMode == CaptureMode.PHOTO) CaptureMode.VIDEO else CaptureMode.PHOTO
-                            )
-                        }
-                    },
-                shape = RoundedCornerShape(20.dp),
-                containerColor = XiroDesignTokens.SurfaceOverlay
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                XiroPillSurface(
+                    modifier = Modifier
+                        .wrapContentWidth()
+                        .clickable(enabled = !actionObservationInProgress && !isRecording) {
+                            scope.launch {
+                                switchViewerCaptureMode(
+                                    if (captureMode == CaptureMode.PHOTO) CaptureMode.VIDEO else CaptureMode.PHOTO
+                                )
+                            }
+                        },
+                    shape = RoundedCornerShape(20.dp),
+                    containerColor = XiroDesignTokens.SurfaceOverlay
                 ) {
-                    Text(
-                        "PHOTO",
-                        color = if (captureMode == CaptureMode.PHOTO) Color.White else Color(0x88FFFFFF),
-                        fontWeight = if (captureMode == CaptureMode.PHOTO) FontWeight.Bold else FontWeight.Normal
-                    )
-                    Text(
-                        "VIDEO",
-                        color = if (captureMode == CaptureMode.VIDEO) Color.White else Color(0x88FFFFFF),
-                        fontWeight = if (captureMode == CaptureMode.VIDEO) FontWeight.Bold else FontWeight.Normal
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            "PHOTO",
+                            color = if (captureMode == CaptureMode.PHOTO) Color.White else Color(0x88FFFFFF),
+                            fontWeight = if (captureMode == CaptureMode.PHOTO) FontWeight.Bold else FontWeight.Normal
+                        )
+                        Text(
+                            "VIDEO",
+                            color = if (captureMode == CaptureMode.VIDEO) Color.White else Color(0x88FFFFFF),
+                            fontWeight = if (captureMode == CaptureMode.VIDEO) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
                 }
-            }
 
-            ViewerCaptureShutterButton(
-                captureMode = captureMode,
-                isRecording = isRecording,
-                recordingElapsedMs = recordingElapsedMs,
-                enabled = !actionObservationInProgress,
-                onClick = {
-                    scope.launch { handlePrimaryCapturePress() }
-                }
-            )
+                ViewerCaptureShutterButton(
+                    captureMode = captureMode,
+                    isRecording = isRecording,
+                    recordingElapsedMs = recordingElapsedMs,
+                    enabled = !actionObservationInProgress,
+                    onClick = {
+                        scope.launch { handlePrimaryCapturePress() }
+                    }
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -1149,6 +1686,7 @@ private fun CameraPreviewSurface(
     streamProfile: StreamProfile,
     rtspController: RtspPlayerController,
     recoveryFrameBitmap: Bitmap?,
+    debugRtspMessages: Boolean,
     onFirstFrameRendered: () -> Unit,
     onPlaybackResumed: () -> Unit,
     onRecoveryRequested: (String) -> Unit,
@@ -1172,6 +1710,7 @@ private fun CameraPreviewSurface(
                 url = rtspUrl,
                 reloadToken = reloadToken,
                 streamProfile = streamProfile,
+                debugRtspMessages = debugRtspMessages,
                 modifier = Modifier.fillMaxSize(),
                 controller = rtspController,
                 onFirstFrameRendered = onFirstFrameRendered,
@@ -1368,6 +1907,334 @@ private fun ViewerWarningBanner(warning: FlightWarning) {
                 Text(warning.detail, color = Color(0xFFD7DCE3), style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+@Composable
+private fun ViewerLiveSettingsPanel(
+    showTransportControls: Boolean,
+    streamProfile: StreamProfile,
+    onSelectStreamProfile: (StreamProfile) -> Unit,
+    selectedTab: ViewerCameraSettingsTab,
+    onSelectTab: (ViewerCameraSettingsTab) -> Unit,
+    previewResolution: String,
+    imageResolution: String,
+    antiBlink: String,
+    controlsEnabled: Boolean,
+    onSettingSelected: (ViewerInteractiveSettingKey, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val backdropInteraction = remember { MutableInteractionSource() }
+    val panelInteraction = remember { MutableInteractionSource() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.42f))
+            .clickable(
+                interactionSource = backdropInteraction,
+                indication = null,
+                onClick = onDismiss
+            )
+    ) {
+        XiroDialogPanel(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 82.dp, end = 14.dp, start = 92.dp)
+                .widthIn(max = 520.dp)
+                .height(540.dp)
+                .clickable(
+                    interactionSource = panelInteraction,
+                    indication = null,
+                    onClick = {}
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Live Camera Settings",
+                            color = XiroDesignTokens.TextPrimary,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        Text(
+                            text = "Legacy XIRO Xplorer tabs recreated here. Capture findings are highlighted; unknown command mappings stay grayed out for now.",
+                            color = XiroDesignTokens.TextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    XiroSecondaryButton(
+                        onClick = onDismiss,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text("Close")
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(XiroDesignTokens.BorderLight)
+                )
+
+                if (showTransportControls) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Live stream transport",
+                            color = XiroDesignTokens.AccentBright,
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "These controls affect XIRO Lite's transport behavior. Preview Resolution below is the legacy camera-side stream-size setting.",
+                            color = XiroDesignTokens.TextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ViewerStreamProfileChip(
+                                label = "Auto (Legacy UDP)",
+                                selected = streamProfile == StreamProfile.AUTO,
+                                onClick = { onSelectStreamProfile(StreamProfile.AUTO) }
+                            )
+                            ViewerStreamProfileChip(
+                                label = "Legacy UDP direct",
+                                selected = streamProfile == StreamProfile.QUALITY,
+                                onClick = { onSelectStreamProfile(StreamProfile.QUALITY) }
+                            )
+                            ViewerStreamProfileChip(
+                                label = "Stability (TCP)",
+                                selected = streamProfile == StreamProfile.STABILITY,
+                                onClick = { onSelectStreamProfile(StreamProfile.STABILITY) }
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(XiroDesignTokens.BorderLight)
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ViewerCameraSettingsTab.entries.forEach { tab ->
+                        XiroToggleChip(
+                            selected = selectedTab == tab,
+                            onClick = { onSelectTab(tab) },
+                            label = {
+                                Text(
+                                    text = tab.title,
+                                    color = if (selectedTab == tab) XiroDesignTokens.TextPrimary else XiroDesignTokens.TextSecondary,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        )
+                    }
+                }
+
+                viewerCameraSettingsFor(
+                    tab = selectedTab,
+                    previewResolution = previewResolution,
+                    imageResolution = imageResolution,
+                    antiBlink = antiBlink
+                ).forEach { setting ->
+                    ViewerCameraSettingCard(
+                        setting = setting,
+                        controlsEnabled = controlsEnabled,
+                        onOptionSelected = setting.actionKey?.let { settingKey ->
+                            { option -> onSettingSelected(settingKey, option) }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ViewerStreamProfileChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    XiroToggleChip(
+        selected = selected,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                color = if (selected) XiroDesignTokens.TextPrimary else XiroDesignTokens.TextSecondary,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    )
+}
+
+@Composable
+private fun ViewerCameraSettingCard(
+    setting: ViewerCameraSettingRow,
+    controlsEnabled: Boolean,
+    onOptionSelected: ((String) -> Unit)? = null
+) {
+    val visualAlpha = when (setting.evidence) {
+        ViewerCameraSettingEvidence.VERIFIED -> 1f
+        ViewerCameraSettingEvidence.OBSERVED -> 0.9f
+        ViewerCameraSettingEvidence.PENDING -> 0.56f
+    }
+    val titleColor = when (setting.evidence) {
+        ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.AccentBright
+        ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.TextPrimary
+        ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.TextPrimary
+    }
+
+    XiroRaisedCard(
+        containerColor = if (setting.evidence == ViewerCameraSettingEvidence.PENDING) {
+            XiroDesignTokens.SurfaceBottom
+        } else {
+            XiroDesignTokens.SurfaceInset
+        }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer(alpha = visualAlpha)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = setting.label,
+                        color = titleColor,
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = "Current: ${setting.currentValue}",
+                        color = XiroDesignTokens.TextSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                XiroPillSurface(
+                    shape = RoundedCornerShape(14.dp),
+                    containerColor = when (setting.evidence) {
+                        ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.Accent
+                        ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.SurfaceOverlay
+                        ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.SurfaceBottom
+                    }
+                ) {
+                    Text(
+                        text = setting.evidence.label,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        color = XiroDesignTokens.TextPrimary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
+
+            if (setting.options.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    setting.options.forEach { option ->
+                        ViewerSettingChip(
+                            label = option,
+                            selected = option == setting.selectedOption,
+                            evidence = setting.evidence,
+                            enabled = controlsEnabled,
+                            interactive = onOptionSelected != null,
+                            onClick = if (onOptionSelected != null) {
+                                { onOptionSelected(option) }
+                            } else {
+                                null
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (setting.note.isNotBlank()) {
+                Text(
+                    text = setting.note,
+                    color = XiroDesignTokens.TextSecondary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ViewerSettingChip(
+    label: String,
+    selected: Boolean,
+    evidence: ViewerCameraSettingEvidence,
+    enabled: Boolean,
+    interactive: Boolean,
+    onClick: (() -> Unit)? = null
+) {
+    val containerColor = when {
+        selected && evidence == ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.Accent
+        selected && evidence == ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.SurfaceOverlay
+        selected -> XiroDesignTokens.SurfaceInset
+        else -> XiroDesignTokens.SurfaceBottom
+    }
+    val textColor = when {
+        selected && evidence != ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.TextPrimary
+        evidence == ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.TextMuted
+        else -> XiroDesignTokens.TextSecondary
+    }
+    val chipAlpha = when {
+        !interactive && evidence == ViewerCameraSettingEvidence.PENDING -> 0.72f
+        !enabled && interactive -> 0.58f
+        else -> 1f
+    }
+
+    XiroPillSurface(
+        modifier = Modifier
+            .graphicsLayer(alpha = chipAlpha)
+            .then(
+                if (interactive && enabled && onClick != null) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            ),
+        shape = RoundedCornerShape(16.dp),
+        containerColor = containerColor
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            color = textColor,
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 

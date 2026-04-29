@@ -33,36 +33,40 @@ class RemoteBatteryProbe(
     suspend fun query(host: String = DEFAULT_RELAY_HOST): Result<RemoteBatteryReading> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val route = WifiRouteSelector.selectWifiNetwork(context, host)
-                val socketFactory = route?.socketFactory ?: SocketFactory.getDefault()
-                val socket = socketFactory.createSocket() as Socket
-
-                socket.use {
-                    it.tcpNoDelay = true
-                    it.keepAlive = false
-                    it.soTimeout = READ_TIMEOUT_MS
-                    it.connect(InetSocketAddress(host, LEGACY_CONTROL_PORT), CONNECT_TIMEOUT_MS)
-
-                    val output = it.getOutputStream()
-                    output.write(REMOTE_BATTERY_WAKE)
-                    output.flush()
-                    Thread.sleep(LEGACY_COMMAND_GAP_MS)
-                    output.write(REMOTE_BATTERY_REQUEST)
-                    output.flush()
-
-                    val response = readBatteryResponse(it.getInputStream())
-                        ?: error("No remote battery response")
-                    val raw = response[4].toInt() and 0xFF
-                    RemoteBatteryReading(
-                        percent = decodePercent(raw),
-                        raw = raw,
-                        responseHex = response.toHex(),
-                        timestampMs = System.currentTimeMillis(),
-                        confidence = "calibrated"
-                    )
-                }
+                openRelaySocket(host).use { query(it) }
             }
         }
+
+    fun openRelaySocket(host: String = DEFAULT_RELAY_HOST): Socket {
+        val route = WifiRouteSelector.selectWifiNetwork(context, host)
+        val socketFactory = route?.socketFactory ?: SocketFactory.getDefault()
+        return (socketFactory.createSocket() as Socket).apply {
+            tcpNoDelay = true
+            keepAlive = false
+            soTimeout = READ_TIMEOUT_MS
+            connect(InetSocketAddress(host, LEGACY_CONTROL_PORT), CONNECT_TIMEOUT_MS)
+        }
+    }
+
+    fun query(socket: Socket): RemoteBatteryReading {
+        val output = socket.getOutputStream()
+        output.write(REMOTE_BATTERY_WAKE)
+        output.flush()
+        Thread.sleep(LEGACY_COMMAND_GAP_MS)
+        output.write(REMOTE_BATTERY_REQUEST)
+        output.flush()
+
+        val response = readBatteryResponse(socket.getInputStream())
+            ?: error("No remote battery response")
+        val raw = response[4].toInt() and 0xFF
+        return RemoteBatteryReading(
+            percent = decodePercent(raw),
+            raw = raw,
+            responseHex = response.toHex(),
+            timestampMs = System.currentTimeMillis(),
+            confidence = "calibrated"
+        )
+    }
 
     private fun readBatteryResponse(input: InputStream): ByteArray? {
         val output = ByteArrayOutputStream()
@@ -147,6 +151,7 @@ class RemoteBatteryProbe(
 
 object RemoteBatteryHub {
     private const val POLL_INTERVAL_MS = 7_000L
+    private const val RECONNECT_DELAY_MS = 1_500L
     private const val MAX_FAILURES_BEFORE_CLEAR = 3
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -175,25 +180,55 @@ object RemoteBatteryHub {
             var failureCount = 0
             try {
                 while (isActive) {
-                    probe.query(host)
-                        .onSuccess { reading ->
-                            failureCount = 0
-                            val previous = _latestReading.value
-                            _latestReading.value = reading
-                            if (previous?.percent != reading.percent || previous.raw != reading.raw) {
-                                logger?.invoke("Remote battery ${reading.percent}% (raw ${reading.raw}, ${reading.responseHex})")
-                            }
-                        }
+                    val socket = runCatching { probe.openRelaySocket(host) }
                         .onFailure { error ->
                             failureCount++
                             if (failureCount == 1) {
-                                logger?.invoke("Remote battery query waiting: ${error.message ?: error::class.java.simpleName}")
+                                logger?.invoke("Remote battery relay waiting: ${error.message ?: error::class.java.simpleName}")
                             }
                             if (failureCount >= MAX_FAILURES_BEFORE_CLEAR) {
                                 _latestReading.value = null
                             }
                         }
-                    delay(POLL_INTERVAL_MS)
+                        .getOrNull()
+
+                    if (socket == null) {
+                        delay(RECONNECT_DELAY_MS)
+                        continue
+                    }
+
+                    socket.use { relaySocket ->
+                        failureCount = 0
+                        logger?.invoke("Remote battery relay channel connected")
+                        while (isActive) {
+                            val reading = runCatching { probe.query(relaySocket) }
+                                .onSuccess { reading ->
+                                    failureCount = 0
+                                    val previous = _latestReading.value
+                                    _latestReading.value = reading
+                                    if (previous?.percent != reading.percent || previous.raw != reading.raw) {
+                                        logger?.invoke("Remote battery ${reading.percent}% (raw ${reading.raw}, ${reading.responseHex})")
+                                    }
+                                }
+                                .onFailure { error ->
+                                    failureCount++
+                                    if (failureCount == 1) {
+                                        logger?.invoke("Remote battery relay reconnecting: ${error.message ?: error::class.java.simpleName}")
+                                    }
+                                    if (failureCount >= MAX_FAILURES_BEFORE_CLEAR) {
+                                        _latestReading.value = null
+                                    }
+                                }
+                                .getOrNull()
+
+                            if (reading == null) break
+                            delay(POLL_INTERVAL_MS)
+                        }
+                    }
+
+                    if (isActive) {
+                        delay(RECONNECT_DELAY_MS)
+                    }
                 }
             } finally {
                 _isRunning.value = false

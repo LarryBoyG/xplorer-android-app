@@ -156,6 +156,10 @@ class TelemetryProbe {
         )
     }
 
+    suspend fun readLiveViewKeepAlive(host: String): TelemetryResult = withContext(Dispatchers.IO) {
+        httpGet(host, "cmd=3012", "CMD 3012")
+    }
+
     suspend fun watch3014(
         host: String,
         intervalMs: Long = 3000,

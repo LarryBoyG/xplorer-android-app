@@ -5,6 +5,8 @@ import com.example.xirolite.data.CommandResult
 object BetaInference {
     private const val LOW_POWER_WARNING_THRESHOLD = 20
     private const val CRITICAL_POWER_WARNING_THRESHOLD = 10
+    private const val TELEMETRY_STALE_AFTER_MS = 5_000L
+    private const val TELEMETRY_LOST_AFTER_MS = 15_000L
     private const val STABLE_NO_GPS_SAMPLE_COUNT = 3
     private const val LEGAL_HEIGHT_LIMIT_METERS = 120.0
     private const val LEGACY_ALARM_MAGNETIC_ERROR = 0x02
@@ -20,15 +22,18 @@ object BetaInference {
         remoteBatteryReading: RemoteBatteryReading? = null,
         relayProbeResults: List<CommandResult>,
         flightLogStatusText: String,
-        measurementUnit: MeasurementUnit
+        measurementUnit: MeasurementUnit,
+        nowMs: Long = System.currentTimeMillis()
     ): BetaUiState {
         val latestRemotePacket = recentRemotePackets.firstOrNull()
+        val remoteTelemetryFresh = isTelemetryFresh(latestRemotePacket, nowMs)
         val candidateFields = buildCandidates(latestRemotePacket, watch3014Summary, remoteBatteryReading)
         val relayState = buildRelayState(relayProbeResults)
         val droneState = buildDroneState(
             watch3014Summary = watch3014Summary,
             recentRemotePackets = recentRemotePackets,
             latestRemotePacket = latestRemotePacket,
+            remoteTelemetryFresh = remoteTelemetryFresh,
             telemetryResults = telemetryResults,
             networkInfo = networkInfo,
             relayState = relayState,
@@ -40,7 +45,8 @@ object BetaInference {
         val preflight = buildPreflight(networkInfo, telemetryResults, latestRemotePacket, droneState)
         val warnings = buildFlightWarnings(
             recentRemotePackets = recentRemotePackets,
-            measurementUnit = measurementUnit
+            measurementUnit = measurementUnit,
+            nowMs = nowMs
         )
         return BetaUiState(
             droneState = droneState,
@@ -54,14 +60,34 @@ object BetaInference {
 
     fun buildFlightWarnings(
         recentRemotePackets: List<RemoteTelemetryPacket>,
-        measurementUnit: MeasurementUnit = MeasurementUnit.METRIC
+        measurementUnit: MeasurementUnit = MeasurementUnit.METRIC,
+        nowMs: Long = System.currentTimeMillis()
     ): List<FlightWarning> {
-        val snapshot = LegacyTelemetryDecoder.decode(recentRemotePackets)
+        val latestRemotePacket = recentRemotePackets.firstOrNull()
+        val telemetryAgeMs = latestRemotePacket?.let { (nowMs - it.timestampMs).coerceAtLeast(0L) }
+        val remoteTelemetryFresh = isTelemetryFresh(latestRemotePacket, nowMs)
+        val snapshot = if (remoteTelemetryFresh) LegacyTelemetryDecoder.decode(recentRemotePackets) else null
         val warnings = mutableListOf<FlightWarning>()
 
-        val recentSatelliteSamples = recentRemotePackets
-            .take(STABLE_NO_GPS_SAMPLE_COUNT)
-            .mapNotNull { it.rawUnsigned(23) }
+        if (telemetryAgeMs != null && !remoteTelemetryFresh) {
+            warnings += FlightWarning(
+                title = if (telemetryAgeMs >= TELEMETRY_LOST_AFTER_MS) "Telemetry Lost" else "Telemetry Stale",
+                detail = "No fresh UDP 6800 telemetry for ${formatAge(telemetryAgeMs)}. GPS, flight mode, aircraft power, gear, and elevation are hidden until live packets resume.",
+                severity = if (telemetryAgeMs >= TELEMETRY_LOST_AFTER_MS) {
+                    FlightWarningSeverity.CRITICAL
+                } else {
+                    FlightWarningSeverity.CAUTION
+                }
+            )
+        }
+
+        val recentSatelliteSamples = if (remoteTelemetryFresh) {
+            recentRemotePackets
+                .take(STABLE_NO_GPS_SAMPLE_COUNT)
+                .mapNotNull { it.rawUnsigned(23) }
+        } else {
+            emptyList()
+        }
         val stableLowGpsLock = recentSatelliteSamples.size == STABLE_NO_GPS_SAMPLE_COUNT &&
             recentSatelliteSamples.all { !LegacyTelemetryDecoder.hasGpsModeSatelliteLock(it) }
         if (stableLowGpsLock) {
@@ -84,13 +110,13 @@ object BetaInference {
             when {
                 batteryPercent <= CRITICAL_POWER_WARNING_THRESHOLD -> warnings += FlightWarning(
                     title = "Aircraft Power Critical",
-                    detail = "Aircraft power is $batteryPercent%. Land as soon as possible.",
+                    detail = "Aircraft power is $batteryPercent%. Land immediately if safe; automatic return or landing behavior may already be active.",
                     severity = FlightWarningSeverity.CRITICAL
                 )
 
                 batteryPercent <= LOW_POWER_WARNING_THRESHOLD -> warnings += FlightWarning(
-                    title = "Aircraft Power Low",
-                    detail = "Aircraft power is $batteryPercent%. Plan to land soon.",
+                    title = "Low Battery Return Home",
+                    detail = "Aircraft power is $batteryPercent%. The flight controller may start return-home automatically; monitor position and prepare to land.",
                     severity = FlightWarningSeverity.CAUTION
                 )
             }
@@ -115,6 +141,7 @@ object BetaInference {
         watch3014Summary: Telemetry3014Summary?,
         recentRemotePackets: List<RemoteTelemetryPacket>,
         latestRemotePacket: RemoteTelemetryPacket?,
+        remoteTelemetryFresh: Boolean,
         telemetryResults: List<TelemetryResult>,
         networkInfo: DroneNetworkInfo,
         relayState: RelayStateUi,
@@ -125,15 +152,17 @@ object BetaInference {
     ): DroneStateUi {
         val packet = latestRemotePacket
         val summary = watch3014Summary
-        val legacySnapshot = LegacyTelemetryDecoder.decode(recentRemotePackets)
+        val legacySnapshot = if (remoteTelemetryFresh) LegacyTelemetryDecoder.decode(recentRemotePackets) else null
 
         val satCount = when {
+            packet != null && !remoteTelemetryFresh -> "Stale"
             legacySnapshot?.satellites != null -> legacySnapshot.satellites.toString()
             summary?.value(2033) != null -> summary.value(2033).toString()
             else -> "--"
         }
 
         val gpsText = when {
+            packet != null && !remoteTelemetryFresh -> "Telemetry stale"
             legacySnapshot?.gpsText != null -> legacySnapshot.gpsText
             summary?.value(2033) != null -> when (summary.value(2033)) {
                 0 -> "No lock"
@@ -146,27 +175,41 @@ object BetaInference {
         }
 
         val flightModeText = when {
+            packet != null && !remoteTelemetryFresh -> "Telemetry stale"
             legacySnapshot?.flightModeText != null -> legacySnapshot.flightModeText
             summary?.value(2034) != null -> "Mode ${summary.value(2034)}"
             else -> packet?.stateGuess?.label ?: "Unknown"
         }
 
-        val baroHeightText = derivedFlightTelemetry.altitudeMeters
-            ?.let { formatAltitudeForUnit(it, measurementUnit) }
-            ?: legacySnapshot?.baroHeightMeters
-            ?.let { formatAltitudeForUnit(it, measurementUnit) }
-            ?: legacySnapshot?.altitudeMeters
-            ?.let { formatAltitudeForUnit(it, measurementUnit) }
-            ?: "--"
+        val baroHeightText = if (packet != null && !remoteTelemetryFresh) {
+            "Stale"
+        } else {
+            derivedFlightTelemetry.altitudeMeters
+                ?.let { formatAltitudeForUnit(it, measurementUnit) }
+                ?: legacySnapshot?.baroHeightMeters
+                    ?.let { formatAltitudeForUnit(it, measurementUnit) }
+                ?: legacySnapshot?.altitudeMeters
+                    ?.let { formatAltitudeForUnit(it, measurementUnit) }
+                ?: "--"
+        }
         val targetHeightText = legacySnapshot?.targetHeightMeters
             ?.let { formatAltitudeForUnit(it, measurementUnit) }
+            ?: if (packet != null && !remoteTelemetryFresh) "Stale" else null
             ?: "--"
-        val speedText = derivedFlightTelemetry.speedMetersPerSecond
-            ?.let { formatSpeedForUnit(it, measurementUnit) }
-            ?: "--"
-        val distanceText = derivedFlightTelemetry.distanceFromHomeMeters
-            ?.let { formatDistanceForUnit(it, measurementUnit) }
-            ?: "--"
+        val speedText = if (packet != null && !remoteTelemetryFresh) {
+            "Stale"
+        } else {
+            derivedFlightTelemetry.speedMetersPerSecond
+                ?.let { formatSpeedForUnit(it, measurementUnit) }
+                ?: "--"
+        }
+        val distanceText = if (packet != null && !remoteTelemetryFresh) {
+            "Stale"
+        } else {
+            derivedFlightTelemetry.distanceFromHomeMeters
+                ?.let { formatDistanceForUnit(it, measurementUnit) }
+                ?: "--"
+        }
 
         val cameraReady = telemetryResults.any { it.label == "CMD 3009" && it.status.startsWith("HTTP 200") }
         val sdCardSummary = telemetryResults.firstOrNull { it.label == "CMD 3014" }?.preview?.let { 
@@ -189,15 +232,20 @@ object BetaInference {
             gpsText = gpsText,
             flightModeText = flightModeText,
             droneBatteryText = legacySnapshot?.droneBatteryPercent?.let { "$it%" }
-                ?: LegacyTelemetryHints.droneBatteryHudText(packet),
+                ?: if (packet != null && !remoteTelemetryFresh) "Stale" else LegacyTelemetryHints.droneBatteryHudText(packet),
             relaySignalText = buildWifiTelemetryText(networkInfo, relayState),
             sdCardText = sdCardText,
             remoteBatteryText = remoteBatteryReading?.let { "${it.percent}%" }
                 ?: LegacyTelemetryHints.remoteBatteryHudText(packet),
-            gearText = legacySnapshot?.gearSelection?.toString() ?: "--",
+            gearText = legacySnapshot?.gearSelection?.toString()
+                ?: if (packet != null && !remoteTelemetryFresh) "Stale" else "--",
             flightLogText = flightLogStatusText,
             fovText = fovText,
-            summary = LegacyTelemetryHints.hudSummaryText(packet, flightLogStatusText, remoteBatteryReading)
+            summary = if (packet != null && !remoteTelemetryFresh) {
+                "Telemetry stale"
+            } else {
+                LegacyTelemetryHints.hudSummaryText(packet, flightLogStatusText, remoteBatteryReading)
+            }
         )
     }
 
@@ -268,7 +316,7 @@ object BetaInference {
             PreflightItem(
                 label = "Aircraft Power",
                 value = droneState.droneBatteryText,
-                ok = droneState.droneBatteryText != "--"
+                ok = droneState.droneBatteryText != "--" && droneState.droneBatteryText != "Stale"
             ),
             PreflightItem(
                 label = "Remote Power",
@@ -283,22 +331,22 @@ object BetaInference {
             PreflightItem(
                 label = "Flight Mode",
                 value = droneState.flightModeText,
-                ok = droneState.flightModeText != "Unknown"
+                ok = droneState.flightModeText != "Unknown" && droneState.flightModeText != "Telemetry stale"
             ),
             PreflightItem(
                 label = "Gear",
                 value = droneState.gearText,
-                ok = droneState.gearText != "--"
+                ok = droneState.gearText != "--" && droneState.gearText != "Stale"
             ),
             PreflightItem(
                 label = "Elevation",
                 value = droneState.baroHeightText,
-                ok = true
+                ok = droneState.baroHeightText != "Stale"
             ),
             PreflightItem(
                 label = "Target Elevation",
                 value = droneState.targetHeightText,
-                ok = true
+                ok = droneState.targetHeightText != "Stale"
             ),
             PreflightItem(
                 label = "SD Card",
@@ -420,5 +468,13 @@ object BetaInference {
 
     private fun candidateValue(packet: RemoteTelemetryPacket, index: Int): Int {
         return packet.watchedOffsets.firstOrNull { it.index == index }?.unsigned ?: -1
+    }
+
+    private fun isTelemetryFresh(packet: RemoteTelemetryPacket?, nowMs: Long): Boolean =
+        packet != null && nowMs - packet.timestampMs <= TELEMETRY_STALE_AFTER_MS
+
+    private fun formatAge(ageMs: Long): String {
+        val seconds = ageMs.coerceAtLeast(0L) / 1_000.0
+        return "%.1fs".format(seconds)
     }
 }

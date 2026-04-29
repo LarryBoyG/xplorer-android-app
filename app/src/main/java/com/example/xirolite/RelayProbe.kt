@@ -106,6 +106,22 @@ class RelayProbe {
         )
     }
 
+    suspend fun probeSettingsRootLiveView(host: String): List<CommandResult> = withContext(Dispatchers.IO) {
+        val sessionResult = tryPersistentSettingsRootSession(host)
+        val status = if (looksUsable(sessionResult?.status?.preview.orEmpty())) {
+            sessionResult!!.status
+        } else {
+            getRepeaterStatusSocketOnly(host)
+        }
+        val currentAir = if (looksUsable(sessionResult?.currentAir?.preview.orEmpty())) {
+            sessionResult!!.currentAir
+        } else {
+            getCurrentAirWifiInfoSocketOnly(host)
+        }
+
+        listOf(status, currentAir)
+    }
+
     suspend fun probeBindMenu(host: String, forceRescan: Boolean = true): List<CommandResult> = withContext(Dispatchers.IO) {
         val sessionResult = tryPersistentBindMenuSession(host, forceRescan)
         val status = if (looksUsable(sessionResult?.status?.preview.orEmpty())) {

@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "xiro-lite"
 include(":app")
+include(":media3-exoplayer-rtsp-xiro")

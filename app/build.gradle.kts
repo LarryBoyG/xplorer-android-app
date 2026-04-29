@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.xirolite"
         minSdk = 24
         targetSdk = 36
-        versionCode = 101
-        versionName = "0.4.1-beta"
+        versionCode = 124
+        versionName = "0.4.24-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -68,7 +68,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-exoplayer-rtsp:1.5.1")
+    implementation(project(":media3-exoplayer-rtsp-xiro"))
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("org.mapsforge:mapsforge-map-android:0.25.0")
     implementation("org.mapsforge:mapsforge-themes:0.25.0")

@@ -4,6 +4,7 @@ import com.example.xirolite.data.LegacyCompatibilityCatalog
 import com.example.xirolite.data.LegacyDroneProfile
 import com.example.xirolite.data.XiroCommand
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -102,6 +103,49 @@ class CameraMediaController(
         toOperationResult("Set ${mode.name.lowercase(Locale.US).replaceFirstChar(Char::titlecase)} Mode", entries)
     }
 
+    suspend fun prepareLivePreview(host: String): CameraOperationResult = withContext(Dispatchers.IO) {
+        val entries = mutableListOf<CameraActionResult>()
+        entries += fetch("Live Preview - Set video mode", commandUrl(host, commandSet.setVideoModePath))
+        entries += fetch("Live Preview - Camera prep", commandUrl(host, commandSet.prepPath))
+        toOperationResult("Live Preview Prep", entries)
+    }
+
+    suspend fun runLegacyPostPlayPreviewSequence(host: String): CameraOperationResult = withContext(Dispatchers.IO) {
+        val entries = mutableListOf<CameraActionResult>()
+
+        fun customCommand(label: String, command: String): CameraActionResult =
+            fetch(label, "http://$host/?custom=1&$command")
+
+        entries += customCommand("Live Preview - Status cmd 3014", "cmd=3014")
+        delay(35)
+        entries += customCommand("Live Preview - Keepalive cmd 3012", "cmd=3012")
+        delay(70)
+        entries += customCommand("Live Preview - Keepalive cmd 3012", "cmd=3012")
+        delay(40)
+        entries += customCommand("Live Preview - Status cmd 3014", "cmd=3014")
+        delay(645)
+        entries += customCommand("Live Preview - Keepalive cmd 3012", "cmd=3012")
+        delay(250)
+        entries += fetch("Live Preview - Set video mode", commandUrl(host, commandSet.setVideoModePath))
+        delay(430)
+        val now = Date()
+        val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getDefault() }
+        val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getDefault() }
+        entries += fetch(
+            "Live Preview - Clock Sync",
+            "http://$host/?custom=1&cmd=3005&str=${URLEncoder.encode(dateFmt.format(now), "UTF-8")}"
+        )
+        delay(50)
+        entries += fetch(
+            "Live Preview - Clock Sync",
+            "http://$host/?custom=1&cmd=3006&str=${URLEncoder.encode(timeFmt.format(now), "UTF-8")}"
+        )
+        delay(520)
+        entries += fetch("Live Preview - Camera prep", commandUrl(host, commandSet.prepPath))
+
+        toOperationResult("Legacy Live Preview Sequence", entries)
+    }
+
     suspend fun triggerPrimaryAction(host: String, mode: CaptureMode, currentlyRecording: Boolean): CameraOperationResult = withContext(Dispatchers.IO) {
         val entries = mutableListOf<CameraActionResult>()
         val title: String
@@ -124,6 +168,86 @@ class CameraMediaController(
         }
         entries += fetch("$title - ${candidate.label}", candidate.url)
         toOperationResult(title, entries)
+    }
+
+    suspend fun setPreviewResolution(host: String, resolution: String): CameraOperationResult = withContext(Dispatchers.IO) {
+        val par = when (resolution) {
+            "480p" -> 2
+            "360p" -> 3
+            "240p" -> 4
+            else -> null
+        }
+        if (par == null) {
+            return@withContext CameraOperationResult(
+                title = "Set Preview Resolution",
+                success = false,
+                entries = emptyList(),
+                summary = "Unsupported preview resolution: $resolution"
+            )
+        }
+
+        val entries = mutableListOf<CameraActionResult>()
+        entries += fetch("Preview Resolution - Begin apply", "http://$host/?custom=1&cmd=2015&par=0")
+        delay(80)
+        entries += fetch("Preview Resolution - Status cmd 3014", "http://$host/?custom=1&cmd=3014")
+        delay(80)
+        entries += fetch("Preview Resolution - Keepalive cmd 3012", "http://$host/?custom=1&cmd=3012")
+        delay(80)
+        entries += fetch("Preview Resolution - Set cmd 2010", "http://$host/?custom=1&cmd=2010&par=$par")
+        delay(80)
+        entries += fetch("Preview Resolution - Finish apply", "http://$host/?custom=1&cmd=2015&par=1")
+        delay(120)
+        entries += fetch("Preview Resolution - Status cmd 3014", "http://$host/?custom=1&cmd=3014")
+
+        toOperationResult("Set Preview Resolution", entries).copy(
+            summary = buildString {
+                append("Legacy preview stream-size command sent for $resolution (cmd 2010 par=$par with cmd 2015 apply)")
+                entries.lastOrNull()?.let { append(" - ${it.status}") }
+            }
+        )
+    }
+
+    suspend fun setImageResolution(host: String, resolution: String): CameraOperationResult = withContext(Dispatchers.IO) {
+        val par = when (resolution) {
+            "4320x3240" -> 0
+            "4032x3024" -> 1
+            "3648x2736" -> 2
+            else -> null
+        }
+        if (par == null) {
+            return@withContext CameraOperationResult(
+                title = "Set Image Resolution",
+                success = false,
+                entries = emptyList(),
+                summary = "Unsupported image resolution: $resolution"
+            )
+        }
+
+        val entry = fetch("Image Resolution - Set cmd 1002", "http://$host/?custom=1&cmd=1002&par=$par")
+        toOperationResult("Set Image Resolution", listOf(entry)).copy(
+            summary = "Legacy still-photo resolution command sent for $resolution (cmd 1002 par=$par) - ${entry.status}"
+        )
+    }
+
+    suspend fun setAntiBlink(host: String, antiBlink: String): CameraOperationResult = withContext(Dispatchers.IO) {
+        val par = when (antiBlink) {
+            "50HZ" -> 0
+            "60HZ" -> 1
+            else -> null
+        }
+        if (par == null) {
+            return@withContext CameraOperationResult(
+                title = "Set Anti-blink",
+                success = false,
+                entries = emptyList(),
+                summary = "Unsupported Anti-blink value: $antiBlink"
+            )
+        }
+
+        val entry = fetch("Anti-blink - Set cmd 3080", "http://$host/?custom=1&cmd=3080&par=$par")
+        toOperationResult("Set Anti-blink", listOf(entry)).copy(
+            summary = "Legacy Anti-blink command sent for $antiBlink (cmd 3080 par=$par) - ${entry.status}"
+        )
     }
 
     suspend fun capturePhoto(host: String): CameraPhotoCaptureResult = withContext(Dispatchers.IO) {

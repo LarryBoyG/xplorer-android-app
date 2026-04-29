@@ -13,8 +13,12 @@ object LegacyTelemetryHints {
 
     private val offsetLabels = mapOf(
         23 to "Satellites",
-        28 to "State Family",
-        29 to "State Subtype",
+        24 to "UTC Year",
+        25 to "UTC Month",
+        26 to "UTC Day",
+        27 to "UTC Hour",
+        28 to "UTC Minute",
+        29 to "UTC Second",
         41 to "Signal / Status",
         46 to "Control Step A",
         47 to "Control Step B",
@@ -37,8 +41,12 @@ object LegacyTelemetryHints {
 
     private val offsetHints = mapOf(
         23 to "High-confidence legacy satellite count lead. It matched XIRO Assistant satellite values in the filled HJ checkpoints.",
-        28 to "State family byte. Useful when comparing only flight mode or switch changes.",
-        29 to "State subtype byte. Useful when comparing only flight mode or switch changes.",
+        24 to "HJ-compatible packet timestamp year byte. Captures show 0x1A for 2026.",
+        25 to "HJ-compatible packet timestamp month byte.",
+        26 to "HJ-compatible packet timestamp day byte.",
+        27 to "HJ-compatible packet timestamp hour byte in UTC.",
+        28 to "HJ-compatible packet timestamp minute byte. This is not a flight-state field.",
+        29 to "HJ-compatible packet timestamp second byte. This is not a flight-state field.",
         41 to "Signal/status window candidate. Not tied to a recovered legacy field yet.",
         46 to "Control-step candidate pair lead. Compare when only the physical switch changes.",
         47 to "Control-step candidate pair lead. Compare when only the physical switch changes.",
@@ -62,7 +70,9 @@ object LegacyTelemetryHints {
     private val pairLabels = mapOf(
         19 to "Stick Pair",
         20 to "Stick Step Pair",
-        28 to "State Pair",
+        24 to "UTC Year/Month",
+        26 to "UTC Day/Hour",
+        28 to "UTC Minute/Second",
         46 to "Control Step Pair",
         51 to "Drone Power %",
         57 to "Navigation Pair",
@@ -76,7 +86,9 @@ object LegacyTelemetryHints {
     private val pairHints = mapOf(
         19 to "Manual-stick family pair. Useful when the remote is actively being moved.",
         20 to "Manual-stick family pair. Useful when the remote is actively being moved.",
-        28 to "State family/subtype pair. Useful for currentControlState and flightGear comparisons.",
+        24 to "HJ-compatible packet timestamp year/month pair.",
+        26 to "HJ-compatible packet timestamp day/hour pair.",
+        28 to "HJ-compatible packet timestamp minute/second pair. Legacy UDP flight captures confirmed this is time, not currentControlState.",
         46 to "Control-step pair candidate. Useful when only the remote switch changes.",
         51 to "High-confidence legacy drone power pair. XIRO Assistant power matched u16 / 256 exactly in the filled HJ checkpoints.",
         57 to "Navigation-state pair candidate. Useful for GPS and turn-back comparisons.",

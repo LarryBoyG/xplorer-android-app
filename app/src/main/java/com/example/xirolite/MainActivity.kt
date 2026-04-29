@@ -50,6 +50,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -114,6 +115,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -129,6 +131,8 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.xirolite.data.CommandResult
 import com.example.xirolite.data.LegacyCompatibilityCatalog
 import com.example.xirolite.data.LegacyDroneProfile
@@ -278,10 +282,81 @@ private data class LibraryMediaInfo(
 private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     version = BuildConfig.VERSION_NAME,
     changes = listOf(
+        "The Live Camera Settings transport selector is now hidden from normal users and only appears when debug mode is enabled, keeping the public Live View UI focused on the legacy-faithful UDP path.",
+        "Opening the Live Camera Settings panel now hides the right-side PHOTO and VIDEO mode switcher plus the shutter control, so the settings dialog no longer has capture controls floating across it.",
+        "The System Settings tab now records the latest factory-reset capture finding directly in the UI, marking Camera Factory Reset as an observed legacy action tied to cmd 3081 instead of leaving it completely unknown.",
+        "The settings overlay now reads like a dedicated dialog instead of competing visually with active capture controls from the live camera view.",
+        "XIRO Lite's local RTSP UDP transport now accepts full-size XIRO camera datagrams instead of relying on Media3's smaller default packet buffer, which was a poor fit for the camera's repeated ~8200 byte H.264 payloads.",
+        "Dedicated Live View now asks Android for a much larger UDP socket receive buffer on the XIRO RTP path and logs the actual buffer size the OS grants, so future captures can confirm whether app-side UDP pressure is still a factor.",
+        "Fresh UDP-first captures showed sustained H.264 traffic with zero tcpdump-level loss while the picture still arrived green and patchy, pointing away from missing transport and toward packet truncation or app-side socket pressure inside XIRO Lite.",
+        "TCP-first still barely receives any real interleaved media from the camera, so this release focuses on the UDP path that actually carries video and removes a likely source of silent H.264 datagram truncation there.",
+        "Live View now logs the full ordered list of available H.264 decoders and the exact decoder Media3 actually initializes, so future distortion captures can be tied to a real codec path instead of guesswork.",
+        "The XIRO H.264 RTP reader now treats aggregated STAP-A packets as real keyframe candidates, detects embedded SPS, PPS, and IDR units, and flags those access units as keyframes instead of always marking them non-key.",
+        "After RTP packet loss, the reader now distinguishes between loss inside an in-flight access unit versus loss between access-unit boundaries, dropping the damaged unit cleanly while still forcing a wait for the next keyframe.",
+        "Preview Resolution, Image Resolution, and Anti-blink are now clickable in the Live View camera-settings panel instead of being read-only evidence chips.",
+        "Preview Resolution now sends the decoded legacy cmd 2010 stream-size request wrapped in the original cmd 2015 apply sequence, then rebuilds RTSP so the selected preview size can actually take effect.",
+        "Image Resolution and Anti-blink now send their captured legacy camera commands directly from the gear panel, while the still-unknown camera settings remain intentionally grayed out.",
+        "Live View now opens a real camera-settings panel from the gear icon instead of the old one-line stream dropdown, giving the viewer a legacy-style home for stream controls and future camera tuning.",
+        "The new Live View settings panel now includes the four legacy XIRO tabs: Camera Parameter, Picture Parameter, Photograph Setting, and System settings.",
+        "Verified capture findings now appear directly inside that panel, so Preview Resolution is clearly shown as the live RTSP stream-size control while still-unknown commands stay intentionally grayed out.",
+        "Image Resolution and Anti-blink are now labeled with the capture evidence we decoded from the legacy app, making it clearer which camera settings affect the live stream and which ones are still-photo or image-processing controls.",
+        "Live View now prefers software H.264 decoders when available for the XIRO RTSP stream, instead of always taking the phone's default hardware AVC decoder first.",
+        "Dedicated RTSP playback now disables asynchronous MediaCodec queueing and enables decoder fallback, making the decoder path more conservative for the XIRO camera's older live stream.",
+        "Fresh captures and the camera's SDP confirmed the stream is truly H264/90000 with a 320x240 SPS, so the remaining green and patched picture points much more toward decoder-path behavior than an H.265 versus H.264 family mismatch.",
+        "This release specifically targets the Android 16 c2.qti.avc.decoder hardware path as a likely source of the persistent partial-green output now that real video is finally arriving over both direct-camera and extender sessions.",
+        "XIRO Lite now reinjects the cached H.264 SPS and PPS initialization NAL units before recovery IDR keyframes, giving the decoder a fresh codec context after startup resync or packet damage.",
+        "The local RTP H.264 reader now marks SPS and PPS reinjection as required whenever it seeks or sees RTP sequence loss, then clears that flag only after a clean keyframe is successfully committed.",
+        "Fresh XIRO Lite captures finally showed real extender and direct-camera video arriving, but the remaining green and blocky picture corruption looked much more like decoder resynchronization trouble than a total transport failure.",
+        "Packet analysis showed XIRO Lite was still seeing a small amount of real RTP loss while the matching legacy capture stayed clean, so this release focuses on recovering cleanly on the next IDR instead of continuing with stale codec state.",
+        "XIRO Lite now reproduces the legacy app's client-side UDP punch on XIRO RTSP SETUP by sending the same CE FA ED FE packet from the bound client RTP port toward the camera's announced server_port, then repeating it once after a short delay.",
+        "That legacy UDP punch is now wired into the local RTSP fork itself, so the extender path can prime the repeater relay at the same moment the original app does instead of waiting passively for incoming media.",
+        "Fresh full rooted captures showed the legacy app sends two client RTP packets to 192.168.1.254:6970 immediately after UDP SETUP while XIRO Lite sent none, making this a much stronger extender-path target than another round of HTTP camera command guesses.",
+        "Dedicated Live View now uses a relay-safe socket/session status snapshot for extender telemetry instead of falling through to the repeater's failing HTTP JSON endpoints during flight.",
+        "Background repeater auto-refresh is now limited to the Settings root page, so Camera, Telemetry, Library, and dedicated Live View no longer keep hammering 192.168.2.254 with POST /, /cgi-bin/relay, /relay, and /call probes while video is trying to start.",
+        "The patched local Media3 H.264 RTP reader now buffers complete access units before committing them to the decoder, instead of pushing partial live-view fragments straight through sample output.",
+        "Live View now waits for the first clean IDR keyframe before showing H.264 video, matching the legacy app's visible needFirstIFrame and gotFirstIFrame behavior more closely during startup.",
+        "If RTP packet loss damages a fragmented H.264 access unit, XIRO Lite now drops the rest of that broken unit and waits for the next keyframe instead of smearing corrupted slices across the live picture.",
+        "Fresh direct-camera captures showed XIRO Lite now receives nearly legacy-level UDP RTP volume again, so this release shifts from make media arrive to make arriving media recover cleanly after packet loss or dirty startup.",
+        "TCP-interleaved Stability mode now keeps RTSP sessions alive much longer before declaring the stream dead, backing away from the newer 8 second Media3 timeout experiment that was likely too aggressive for XIRO camera TCP sessions.",
+        "Dedicated Live View now waits much longer before hard-restarting a no-frame TCP stability session, reducing the repeated restart churn that could interrupt slower first-frame startup on the XIRO camera.",
+        "The main app now uses a shared Live View activity flag so hidden profile-detection, camera-storage, and relay-root probe loops pause as soon as the dedicated viewer is open.",
+        "The patched local Media3 RTSP parser now accepts fixed-length RTSP bodies without requiring a trailing newline, matching the XIRO camera's GET_PARAMETER reply format instead of throwing a receiver exception.",
+        "Fresh rooted captures confirmed the camera answers the first GET_PARAMETER with the 10-byte body 2013.07.03 and no trailing LF, and XIRO Lite now accepts that legacy camera behavior cleanly.",
+        "This removes the repeated Message body is empty or does not end with a LF crash in the RTSP receiver, which was tearing down Live View control handling right after the first legacy keepalive reply.",
+        "Live View now restores a legacy-style 8 second RTP packet timeout instead of the newer 30 second packet wait, bringing XIRO Lite's transport startup behavior closer to the original app's shorter socket-timeout model.",
+        "The patched local Media3 RTSP fork now lets UDP and TCP packet channels surface packet-quiet time back to the loader, so XIRO Lite can react sooner when no media ever arrives instead of silently waiting inside the channel layer.",
+        "If legacy UDP startup never receives a first RTP packet, the RTSP module now completes that dead startup inside Media3 so the built-in UDP-to-TCP retry can engage automatically instead of leaving Live View on a prolonged black screen.",
+        "Debug mode now adds dedicated UDP First + Log and TCP First + Log camera launchers, so rooted XIRO Lite test phones can open Live View in a fixed transport mode without manually reconfiguring the viewer first.",
+        "Opening Live View from those debug launchers now automatically starts a rooted 60-second combo capture that saves a tcpdump pcap, app-process logcat, and metadata file into XIRO/live_view_logs/UDP or XIRO/live_view_logs/TCP.",
+        "Dedicated Live View now accepts an explicit startup stream profile from the Camera tab, making side-by-side UDP-first and TCP-first transport testing easier on the same device.",
+        "Viewer debug lines are now mirrored into Android logcat under the XiroViewer tag, so the automatic combo log captures the same RTSP/recovery messages shown inside XIRO Lite.",
+        "The forced XIRO Wi-Fi route-binding experiment has been rolled back for now, so Live View is back on Android's default route behavior while RTSP transport debugging continues.",
+        "XIRO Xplorer Live View now follows the successful legacy post-PLAY ordering more closely by sending the captured 3014 / 3012 / 3012 / 3014 / 3012 burst before 3001, then syncing the clock and only then issuing 2016.",
+        "The XIRO Xplorer startup path no longer front-loads camera clock sync before RTSP; the date/time sync now rides in the same post-PLAY sequence seen in the successful legacy captures.",
         "Remote controller battery is now read through the recovered legacy TCP 6666 getRemoteElectricity callback, using the validated 1A 06 AC 06 D2 request and calibrated raw-to-percent mapping from 40%, 60%, 80%, and 100% captures.",
+        "Remote battery polling now keeps the extender TCP 6666 relay channel open and reuses it for repeat getRemoteElectricity requests, matching the legacy app's long-lived relay-control behavior more closely.",
         "Storage setup now uses an in-app permission prompt before attempting to create the shared XIRO folder tree, instead of jumping to Android storage settings during launch.",
         "If shared storage access is not granted, XIRO Lite can continue with app-private storage for the session while still keeping previews, downloads, maps, and HJ logs functional.",
-        "Live View RTSP now forces stream sockets onto the connected Wi-Fi network when possible, helping phones with active mobile data keep the camera stream on the XIRO extender instead of routing through cellular.",
+        "XIRO Xplorer Live View now runs a legacy-style camera init sequence before RTSP startup and before hard RTSP rebuilds using the recovered 2009 / 2031 par=2 / 1003 / 3012 priming requests seen in fresh legacy captures.",
+        "XIRO Xplorer Live View now sends the legacy preview kick seen in fresh captures by issuing 3001 par=1 and 2016 shortly after startup, moving the camera into live video mode more like the original app.",
+        "The XIRO live-preview 3001 par=1 / 2016 kick now rides on the same guaranteed startup and hard-restart path that turns RTSP back on, instead of relying on a separate delayed side effect.",
+        "XIRO Xplorer 4K now uses the same delayed RTSP startup, preview kick, stream-stability options, and automatic TCP fallback path as the standard XIRO Xplorer profile.",
+        "XIRO Xplorer Live View now uses CMD 3012 as its steady in-view keepalive, closer to the legacy app's repeated live-view camera polling pattern.",
+        "While legacy live view is active, the viewer now stops hammering 1003 / 2009 / 3014 every few seconds and keeps the last known storage data instead, reducing camera-side HTTP churn during RTSP playback.",
+        "The main app now suspends background profile-detection, camera-storage, and relay probe loops whenever it is no longer the foreground activity, so opening dedicated Live View no longer leaves hidden camera probes competing behind it.",
+        "Live View stream Auto now follows the captured legacy RTSP setup by using UDP RTP by default, while the TCP-interleaved path remains available as the Stability fallback.",
+        "Live View now has a startup watchdog for black-screen cases where RTSP stays in BUFFERING and no first frame ever renders.",
+        "If XIRO Xplorer still fails to render a first frame over legacy UDP, XIRO Lite now automatically falls back to the Stability TCP-interleaved profile instead of looping the same dead startup path.",
+        "Legacy UDP RTP startup now gives the camera more time to produce the first video packets before Media3 treats the session as end-of-input, reducing the repeated ~12-second teardown loop seen in fresh XIRO Lite captures.",
+        "Legacy UDP stream mode no longer performs the old 26-second proactive RTSP rebuild, and its stale/buffering recovery windows are more tolerant so short weak-link retransmits do not immediately tear down the player.",
+        "XIRO Lite now uses a patched local Media3 RTSP module so the active RTSP session sends the legacy app's GET_PARAMETER keepalive to /xxxx.mov/track1 immediately after PLAY, then about every 3 seconds.",
+        "Debug Mode now enables Media3 RTSP request/response logging for Live View, giving future logcat captures a way to verify ExoPlayer keepalive behavior against the legacy app.",
+        "Flight-critical telemetry now goes explicitly stale when UDP 6800 packets stop, so old GPS lock, aircraft power, gear, and elevation values do not remain green during a link loss.",
+        "Legacy UDP stream recovery now waits longer during buffering and uses a hard player restart when recovery is needed, matching the manual exit/re-enter path more closely.",
+        "Distance and map position now ignore no-lock GPS coordinates, preventing impossible distance spikes while the aircraft reports 0 satellites.",
+        "Live View camera clock sync now waits until after the first live video frame and a short stabilization delay to reduce startup contention with RTSP stream setup.",
+        "Aircraft low-battery warnings now use legacy-aligned return-home wording, making it clear that the flight controller may automatically begin RTH when aircraft power reaches the low-battery threshold.",
+        "Legacy UDP flight captures confirmed UDP[24..29] are HJ-compatible UTC timestamp bytes, so the debug/research labels now show them as time fields instead of misleading state bytes.",
         "XIRO network detection now scans connected Wi-Fi networks instead of trusting only Android's active/default network, so the app can still recognize the extender when cellular remains the preferred internet route.",
         "The launcher icon now correctly uses the mountain-and-radar XIRO Lite artwork, replacing the accidentally wired placeholder icon from the previous build attempt.",
         "XIRO Lite now shows a mandatory launch disclaimer on every startup, and users must explicitly agree before continuing to use the app.",
@@ -351,7 +426,8 @@ private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
         "HJ logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.",
         "UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.",
         "Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.",
-        "XIRO Lite still approximates the legacy keepalive by refreshing the RTSP session proactively instead of issuing true RTSP GET_PARAMETER on the active ExoPlayer session."
+        "The new active-session RTSP GET_PARAMETER keepalive matches the legacy capture pattern, but it still needs real flight validation against weak-link video dropouts.",
+        "Legacy UDP live view still is not field-stable yet; the new transport timeout and fallback work should shorten black-screen startups, but more capture comparison is still needed before UDP can be treated as solved."
     )
 )
 
@@ -482,6 +558,8 @@ private fun XiroLiteBetaApp() {
     val repo = remember { XiroRepository() }
     val context = LocalContext.current
     val activity = context as? android.app.Activity
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val liveViewSessionActive by LiveViewSessionRegistry.viewerActive.collectAsState()
     val scope = rememberCoroutineScope()
 
     val detector = remember { DroneNetworkDetector(context) }
@@ -543,6 +621,24 @@ private fun XiroLiteBetaApp() {
     var showHud by remember { mutableStateOf(true) }
     var playerReloadToken by remember { mutableStateOf(0) }
     var captureRecoveryMessage by remember { mutableStateOf<String?>(null) }
+    var mainActivityInForeground by remember {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> mainActivityInForeground = true
+                Lifecycle.Event.ON_PAUSE,
+                Lifecycle.Event.ON_STOP -> mainActivityInForeground = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     var lastAutoStreamReloadAtMs by remember { mutableLongStateOf(0L) }
     var autoRecoveryMessageToken by remember { mutableIntStateOf(0) }
     var telemetryRunning by remember { mutableStateOf(false) }
@@ -599,6 +695,7 @@ private fun XiroLiteBetaApp() {
     var storageSetupComplete by remember { mutableStateOf(false) }
     var storageSetupRefreshToken by remember { mutableIntStateOf(0) }
     var storageSetupStatus by remember { mutableStateOf("") }
+    var telemetryNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -638,8 +735,16 @@ private fun XiroLiteBetaApp() {
         remoteBatteryReading = remoteBatteryReading,
         relayProbeResults = relayProbeResults,
         flightLogStatusText = hjLogStatusText,
-        measurementUnit = measurementUnit
+        measurementUnit = measurementUnit,
+        nowMs = telemetryNowMs
     )
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            telemetryNowMs = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
 
     LaunchedEffect(showDisclaimerDialog, storagePromptHandledForSession, storageSetupRefreshToken) {
         if (showDisclaimerDialog || storageSetupComplete) return@LaunchedEffect
@@ -660,7 +765,8 @@ private fun XiroLiteBetaApp() {
         storageSetupStatus = "Using storage root: ${folders.root.absolutePath}"
     }
 
-    LaunchedEffect(networkInfo.localIp, networkInfo.gatewayIp) {
+    LaunchedEffect(networkInfo.localIp, networkInfo.gatewayIp, mainActivityInForeground, liveViewSessionActive) {
+        if (!mainActivityInForeground || liveViewSessionActive) return@LaunchedEffect
         val inferredProfile = detectConnectedProfile(networkInfo = networkInfo, host = host)
         if (selectedProfile.id != inferredProfile.id) {
             selectedProfile = inferredProfile
@@ -672,6 +778,32 @@ private fun XiroLiteBetaApp() {
     fun appendLog(message: String) {
         liveLogs.add("${formatTimestamp(System.currentTimeMillis())}  $message")
         if (liveLogs.size > 300) liveLogs.removeAt(0)
+    }
+
+    fun launchDedicatedCameraViewer(
+        initialStreamProfile: StreamProfile? = null,
+        autoDebugCapture: Boolean = false,
+        launchLabel: String = "Standard"
+    ) {
+        val requestedProfile = initialStreamProfile ?: StreamProfile.AUTO
+        appendLog(
+            "Launching dedicated camera viewer [$launchLabel] " +
+                "with ${requestedProfile.label} (${requestedProfile.transportLabel})"
+        )
+        scope.launch {
+            appendLog("Running camera init before playback")
+            cameraInitResults = cameraInitProbe.run(host)
+        }
+        context.startActivity(Intent(context, CameraViewerActivity::class.java).apply {
+            putExtra(CameraViewerActivity.EXTRA_HOST, host)
+            putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
+            putExtra(CameraViewerActivity.EXTRA_INITIAL_STREAM_PROFILE, requestedProfile.name)
+            putExtra(CameraViewerActivity.EXTRA_AUTO_DEBUG_CAPTURE, autoDebugCapture)
+            putStringArrayListExtra(
+                CameraViewerActivity.EXTRA_HUD_ITEMS,
+                ArrayList(selectedLiveHudItems)
+            )
+        })
     }
 
     fun requestSharedStorageAccess() {
@@ -725,7 +857,8 @@ private fun XiroLiteBetaApp() {
         networkInfo.localIp?.startsWith("192.168.2.") == true ||
             networkInfo.localIp?.startsWith("192.168.1.") == true
 
-    LaunchedEffect(networkInfo.localIp, host) {
+    LaunchedEffect(networkInfo.localIp, host, mainActivityInForeground, liveViewSessionActive) {
+        if (!mainActivityInForeground || liveViewSessionActive) return@LaunchedEffect
         if (!isOnXiroWifi()) {
             cameraStorageResults = emptyList()
             return@LaunchedEffect
@@ -912,12 +1045,13 @@ private fun XiroLiteBetaApp() {
         }
     }
 
-    LaunchedEffect(extenderSettingsEnabled, selectedTab, settingsPage, relayHost) {
+    LaunchedEffect(extenderSettingsEnabled, selectedTab, settingsPage, relayHost, mainActivityInForeground, liveViewSessionActive) {
+        if (!mainActivityInForeground || liveViewSessionActive) return@LaunchedEffect
         if (!extenderSettingsEnabled) return@LaunchedEffect
 
         while (true) {
             val shouldBackgroundProbe =
-                selectedTab != BetaTab.SETTINGS ||
+                selectedTab == BetaTab.SETTINGS &&
                     settingsPage == SettingsPage.ROOT
 
             if (shouldBackgroundProbe) {
@@ -1328,6 +1462,7 @@ private fun XiroLiteBetaApp() {
                     url = rtspUrl,
                     reloadToken = playerReloadToken,
                     streamProfile = streamProfile,
+                    debugRtspMessages = debugModeEnabled,
                     modifier = Modifier.fillMaxSize(),
                     onRecoveryRequested = { reason -> handleAutomaticStreamRecovery(reason) },
                     onLog = { appendLog(it) }
@@ -1474,20 +1609,29 @@ private fun XiroLiteBetaApp() {
                                         profile = selectedProfile,
                                         connectionStatus = connectionStatus,
                                         detectedDroneLabel = cameraHomeDroneLabel(selectedProfile),
-                                        onOpenCamera = {
-                                            appendLog("Launching dedicated camera viewer")
-                                            scope.launch {
-                                                appendLog("Running camera init before playback")
-                                                cameraInitResults = cameraInitProbe.run(host)
-                                            }
-                                            context.startActivity(Intent(context, CameraViewerActivity::class.java).apply {
-                                                putExtra(CameraViewerActivity.EXTRA_HOST, host)
-                                                putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
-                                                putStringArrayListExtra(
-                                                    CameraViewerActivity.EXTRA_HUD_ITEMS,
-                                                    ArrayList(selectedLiveHudItems)
+                                        onOpenCamera = { launchDedicatedCameraViewer(launchLabel = "Standard") },
+                                        debugModeEnabled = debugModeEnabled,
+                                        onOpenUdpFirstCamera = if (debugModeEnabled) {
+                                            {
+                                                launchDedicatedCameraViewer(
+                                                    initialStreamProfile = StreamProfile.QUALITY,
+                                                    autoDebugCapture = true,
+                                                    launchLabel = "UDP First + Combo Log"
                                                 )
-                                            })
+                                            }
+                                        } else {
+                                            null
+                                        },
+                                        onOpenTcpFirstCamera = if (debugModeEnabled) {
+                                            {
+                                                launchDedicatedCameraViewer(
+                                                    initialStreamProfile = StreamProfile.STABILITY,
+                                                    autoDebugCapture = true,
+                                                    launchLabel = "TCP First + Combo Log"
+                                                )
+                                            }
+                                        } else {
+                                            null
                                         }
                                     )
                                 }
@@ -2514,7 +2658,10 @@ private fun CameraHomeCard(
     profile: LegacyDroneProfile,
     connectionStatus: String,
     detectedDroneLabel: String,
-    onOpenCamera: () -> Unit
+    onOpenCamera: () -> Unit,
+    debugModeEnabled: Boolean,
+    onOpenUdpFirstCamera: (() -> Unit)? = null,
+    onOpenTcpFirstCamera: (() -> Unit)? = null
 ) {
     val usesDroneLinkIcon = connectionStatus == "Connected to XIRO extender" &&
         (profile.id == LegacyCompatibilityCatalog.xplorer.id || profile.id == LegacyCompatibilityCatalog.xplorer4k.id)
@@ -2581,6 +2728,36 @@ private fun CameraHomeCard(
                     color = XiroDesignTokens.TextSecondary,
                     style = MaterialTheme.typography.titleSmall
                 )
+                if (debugModeEnabled && onOpenUdpFirstCamera != null && onOpenTcpFirstCamera != null) {
+                    Column(
+                        modifier = Modifier.widthIn(max = 430.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Debug live-view launchers start a rooted 60s combo log in XIRO/live_view_logs.",
+                            color = XiroDesignTokens.TextMuted,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            XiroSecondaryButton(
+                                onClick = onOpenUdpFirstCamera,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("UDP First + Log")
+                            }
+                            XiroSecondaryButton(
+                                onClick = onOpenTcpFirstCamera,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("TCP First + Log")
+                            }
+                        }
+                    }
+                }
             }
         }
     }
