@@ -171,7 +171,7 @@ fun XiroPrimaryButton(
             spotColor = XiroDesignTokens.ShadowDark
         ),
         shape = shape,
-        contentPadding = contentPadding,
+        contentPadding = PaddingValues(0.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = Color.Transparent,
             contentColor = XiroDesignTokens.TextPrimary,
@@ -182,10 +182,12 @@ fun XiroPrimaryButton(
     ) {
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
+                .fillMaxWidth()
                 .clip(shape)
                 .background(if (enabled) accentBrush() else raisedBrush(XiroDesignTokens.SurfaceBottom))
                 .border(1.dp, XiroDesignTokens.BorderStrong, shape)
-                .padding(horizontal = 2.dp, vertical = 1.dp)
+                .padding(horizontal = 2.dp, vertical = 1.dp),
+            contentAlignment = androidx.compose.ui.Alignment.Center
         ) {
             androidx.compose.foundation.layout.Row(
                 modifier = Modifier.padding(contentPadding),
@@ -214,7 +216,7 @@ fun XiroSecondaryButton(
             spotColor = XiroDesignTokens.ShadowDark
         ),
         shape = shape,
-        contentPadding = contentPadding,
+        contentPadding = PaddingValues(0.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = Color.Transparent,
             contentColor = XiroDesignTokens.TextPrimary,
@@ -225,9 +227,11 @@ fun XiroSecondaryButton(
     ) {
         androidx.compose.foundation.layout.Box(
             modifier = Modifier
+                .fillMaxWidth()
                 .clip(shape)
                 .background(raisedBrush(if (enabled) XiroDesignTokens.Surface else XiroDesignTokens.SurfaceBottom))
-                .padding(horizontal = 2.dp, vertical = 1.dp)
+                .padding(horizontal = 2.dp, vertical = 1.dp),
+            contentAlignment = androidx.compose.ui.Alignment.Center
         ) {
             androidx.compose.foundation.layout.Row(
                 modifier = Modifier.padding(contentPadding),

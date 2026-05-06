@@ -1,10 +1,18 @@
 package com.example.xirolite
 
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 data class HjLogRecorderState(
     val isActive: Boolean = false,
@@ -17,13 +25,16 @@ data class HjLogRecorderState(
 class HjLogRecorder(
     private val localLibraryManager: LocalLibraryManager
 ) {
-    private var outputStream: FileOutputStream? = null
+    private val writerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var outputStream: BufferedOutputStream? = null
     private var activeFile: File? = null
     private var lastSavedFile: File? = null
     private var recordsWritten: Int = 0
     private var sessionStartedAtMs: Long = 0L
     private var firstPacketTimestampMs: Long? = null
     private var lastPacketTimestampMs: Long? = null
+    private var writerChannel: Channel<ByteArray>? = null
+    private var writerJob: Job? = null
 
     @Synchronized
     fun startSession(tag: String = "XIROLITE"): HjLogRecorderState {
@@ -34,13 +45,28 @@ class HjLogRecorder(
         val timestamp = SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date(now))
         val safeTag = tag.replace(Regex("[^A-Za-z0-9]+"), "").ifBlank { "XIROLITE" }
         val file = File(folders.metadata, "ANDROID_T${timestamp}${safeTag}.hj")
+        val stream = BufferedOutputStream(FileOutputStream(file, false), 16 * 1024)
+        val channel = Channel<ByteArray>(Channel.UNLIMITED)
 
-        outputStream = FileOutputStream(file, false)
+        outputStream = stream
         activeFile = file
         recordsWritten = 0
         sessionStartedAtMs = now
         firstPacketTimestampMs = null
         lastPacketTimestampMs = null
+        writerChannel = channel
+        writerJob = writerScope.launch {
+            var bufferedPackets = 0
+            for (record in channel) {
+                stream.write(record)
+                bufferedPackets += 1
+                if (bufferedPackets >= 32) {
+                    stream.flush()
+                    bufferedPackets = 0
+                }
+            }
+            stream.flush()
+        }
 
         return currentState("Recording .hj to ${file.name}")
     }
@@ -48,13 +74,14 @@ class HjLogRecorder(
     @Synchronized
     fun appendPacket(packet: RemoteTelemetryPacket): HjLogRecorderState {
         val record = packet.toHjRecord() ?: return currentState("Waiting for HJ-compatible UDP packets")
-        val stream = outputStream ?: return currentState()
+        val channel = writerChannel ?: return currentState()
         if (firstPacketTimestampMs == null) {
             firstPacketTimestampMs = packet.timestampMs
         }
         lastPacketTimestampMs = packet.timestampMs
-        stream.write(record)
-        stream.flush()
+        if (!channel.trySend(record).isSuccess) {
+            return currentState("Flight log writer unavailable")
+        }
         recordsWritten += 1
         return currentState("Recording .hj (${recordsWritten} records)")
     }
@@ -115,6 +142,7 @@ class HjLogRecorder(
 
     @Synchronized
     private fun closeInternal(deleteActiveFile: Boolean) {
+        closeWriterPipeline()
         runCatching { outputStream?.flush() }
         runCatching { outputStream?.close() }
         outputStream = null
@@ -126,6 +154,17 @@ class HjLogRecorder(
         sessionStartedAtMs = 0L
         firstPacketTimestampMs = null
         lastPacketTimestampMs = null
+    }
+
+    private fun closeWriterPipeline() {
+        val channel = writerChannel
+        val job = writerJob
+        writerChannel = null
+        writerJob = null
+        channel?.close()
+        runBlocking {
+            job?.join()
+        }
     }
 
     private fun finalizeSavedFile(

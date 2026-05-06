@@ -150,7 +150,14 @@ import java.util.concurrent.LinkedBlockingQueue;
   @Override
   public void onInterleavedBinaryDataReceived(byte[] data) {
     if (!closed) {
+      if (isRtpChannel() && data.length > 0) {
+        RtspDebugStats.recordTcpInterleavedRtpPacket(data.length);
+      }
       packetQueue.add(data);
     }
+  }
+
+  private boolean isRtpChannel() {
+    return channelNumber != C.INDEX_UNSET && channelNumber % 2 == 0;
   }
 }

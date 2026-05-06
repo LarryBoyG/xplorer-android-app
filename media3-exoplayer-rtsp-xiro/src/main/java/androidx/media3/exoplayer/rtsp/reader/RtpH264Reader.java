@@ -119,16 +119,19 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
             TAG,
             Util.formatInvariant(
                 "Detected RTP packet loss before H264 sample assembly. Expected: %d; received: %d."
-                    + " Waiting for the next key frame%s.",
+                    + " %s%s.",
                 expectedSequenceNumber,
                 sequenceNumber,
-                packetLossInsideAccessUnit ? " and dropping the in-flight access unit" : ""));
-        waitingForKeyFrame = true;
-        prependInitializationDataToKeyFrame = true;
+                packetLossInsideAccessUnit
+                    ? "Dropping the in-flight access unit and waiting for the next key frame"
+                    : "A whole access unit was likely skipped between markers",
+                packetLossInsideAccessUnit ? "" : "; continuing with the next decodable sample"));
         if (packetLossInsideAccessUnit) {
           accessUnitBuffer.reset();
           bufferFlags = 0;
           droppingAccessUnit = true;
+          waitingForKeyFrame = true;
+          prependInitializationDataToKeyFrame = true;
         }
       }
     }
@@ -341,15 +344,22 @@ import org.checkerframework.checker.nullness.qual.RequiresNonNull;
     } else if (!droppingAccessUnit) {
       int expectedSequenceNumber = RtpPacket.getNextSequenceNumber(previousSequenceNumber);
       if (packetSequenceNumber != expectedSequenceNumber) {
+        boolean requireKeyFrameRecovery = waitingForKeyFrame || nalType == NAL_UNIT_TYPE_IDR;
         Log.w(
             TAG,
             Util.formatInvariant(
                 "Received RTP packet with unexpected sequence number. Expected: %d; received: %d."
-                    + " Dropping the rest of the access unit and waiting for the next key frame.",
-                expectedSequenceNumber, packetSequenceNumber));
+                    + " Dropping the rest of the access unit%s.",
+                expectedSequenceNumber,
+                packetSequenceNumber,
+                requireKeyFrameRecovery
+                    ? " and waiting for the next key frame"
+                    : " but keeping live playback moving"));
         droppingAccessUnit = true;
-        waitingForKeyFrame = true;
-        prependInitializationDataToKeyFrame = true;
+        if (requireKeyFrameRecovery) {
+          waitingForKeyFrame = true;
+          prependInitializationDataToKeyFrame = true;
+        }
         return;
       }
       appendBytes(data.getData(), FU_PAYLOAD_OFFSET, data.limit() - FU_PAYLOAD_OFFSET);

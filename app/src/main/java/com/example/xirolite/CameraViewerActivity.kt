@@ -3,6 +3,8 @@ package com.example.xirolite
 import android.Manifest
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,6 +23,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -40,6 +43,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -91,6 +95,12 @@ class CameraViewerActivity : ComponentActivity() {
         val initialStreamProfile = intent.getStringExtra(EXTRA_INITIAL_STREAM_PROFILE)
             ?.let { raw -> StreamProfile.entries.firstOrNull { it.name == raw } }
             ?: StreamProfile.AUTO
+        val initialPipelineMode = intent.getStringExtra(EXTRA_VIDEO_PIPELINE_MODE)
+            ?.let { raw -> LiveVideoPipelineMode.entries.firstOrNull { it.name == raw } }
+            ?: LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE
+        val initialDecoderStrategy = intent.getStringExtra(EXTRA_FLIGHT_FEED_DECODER_STRATEGY)
+            ?.let { raw -> FlightFeedDecoderStrategy.entries.firstOrNull { it.name == raw } }
+            ?: FlightFeedDecoderStrategy.AUTO
         val autoDebugCapture = intent.getBooleanExtra(EXTRA_AUTO_DEBUG_CAPTURE, false)
         val selectedHudItems = intent.getStringArrayListExtra(EXTRA_HUD_ITEMS)?.toSet()
             ?: getSharedPreferences(UI_PREFS_NAME, MODE_PRIVATE)
@@ -103,6 +113,8 @@ class CameraViewerActivity : ComponentActivity() {
                     host = host,
                     profile = profile,
                     initialStreamProfile = initialStreamProfile,
+                    initialPipelineMode = initialPipelineMode,
+                    initialDecoderStrategy = initialDecoderStrategy,
                     autoDebugCapture = autoDebugCapture,
                     selectedHudItems = normalizeHudSelection(selectedHudItems),
                     onExit = { finish() }
@@ -117,6 +129,8 @@ class CameraViewerActivity : ComponentActivity() {
         const val EXTRA_HUD_ITEMS = "extra_hud_items"
         const val EXTRA_INITIAL_STREAM_PROFILE = "extra_initial_stream_profile"
         const val EXTRA_AUTO_DEBUG_CAPTURE = "extra_auto_debug_capture"
+        const val EXTRA_VIDEO_PIPELINE_MODE = "extra_video_pipeline_mode"
+        const val EXTRA_FLIGHT_FEED_DECODER_STRATEGY = "extra_flight_feed_decoder_strategy"
     }
 }
 
@@ -128,8 +142,8 @@ private enum class ViewerCameraSettingsTab(val title: String) {
 }
 
 private enum class ViewerCameraSettingEvidence(val label: String) {
-    VERIFIED("Capture verified"),
-    OBSERVED("Capture observed"),
+    VERIFIED(""),
+    OBSERVED(""),
     PENDING("Command pending")
 }
 
@@ -138,6 +152,10 @@ private enum class ViewerInteractiveSettingKey {
     IMAGE_RESOLUTION,
     ANTI_BLINK
 }
+
+private const val VIEWER_TELEMETRY_STALE_AFTER_MS = 5_000L
+private const val VIEWER_TELEMETRY_LOST_AFTER_MS = 15_000L
+private const val VIEWER_TELEMETRY_REFRESH_SLACK_MS = 75L
 
 private data class ViewerCameraSettingRow(
     val label: String,
@@ -193,7 +211,7 @@ private fun viewerCameraSettingsFor(
                 options = listOf("50HZ", "60HZ"),
                 selectedOption = antiBlink,
                 evidence = ViewerCameraSettingEvidence.VERIFIED,
-                note = "Capture verified. Legacy sends cmd 3080 with par 0 = 50HZ and par 1 = 60HZ. The live RTSP stream stays on the same SDP while Anti-blink changes.",
+                note = "Legacy sends cmd 3080 with par 0 = 50HZ and par 1 = 60HZ. The live RTSP stream stays on the same SDP while Anti-blink changes.",
                 actionKey = ViewerInteractiveSettingKey.ANTI_BLINK
             )
         )
@@ -205,7 +223,7 @@ private fun viewerCameraSettingsFor(
                 options = listOf("480p", "360p", "240p"),
                 selectedOption = previewResolution,
                 evidence = ViewerCameraSettingEvidence.VERIFIED,
-                note = "Capture verified. Legacy wraps cmd 2010 with cmd 2015 apply steps and fully rebuilds RTSP. Captured mapping: 480p = par 2, 360p = par 3, 240p = par 4. SDP sizes: 240p = 320x240, 360p = 640x360, 480p = 640x480.",
+                note = "Legacy wraps cmd 2010 with cmd 2015 apply steps and fully rebuilds RTSP. Captured mapping: 480p = par 2, 360p = par 3, 240p = par 4. SDP sizes: 240p = 320x240, 360p = 640x360, 480p = 640x480.",
                 actionKey = ViewerInteractiveSettingKey.PREVIEW_RESOLUTION
             ),
             ViewerCameraSettingRow(
@@ -214,7 +232,7 @@ private fun viewerCameraSettingsFor(
                 options = listOf("4320x3240", "4032x3024", "3648x2736"),
                 selectedOption = imageResolution,
                 evidence = ViewerCameraSettingEvidence.OBSERVED,
-                note = "Capture observed. Legacy sends cmd 1002 when this changes and still-photo resolution updates, but the live RTSP stream does not restart. Captured mapping: 4320x3240 = par 0, 4032x3024 = par 1, 3648x2736 = par 2.",
+                note = "Legacy sends cmd 1002 when this changes and still-photo resolution updates, but the live RTSP stream does not restart. Captured mapping: 4320x3240 = par 0, 4032x3024 = par 1, 3648x2736 = par 2.",
                 actionKey = ViewerInteractiveSettingKey.IMAGE_RESOLUTION
             ),
             ViewerCameraSettingRow(
@@ -258,7 +276,7 @@ private fun viewerCameraSettingsFor(
                 currentValue = "Reset Button",
                 options = listOf("Reset"),
                 evidence = ViewerCameraSettingEvidence.OBSERVED,
-                note = "Capture observed. The legacy app issues cmd 3081 here, then follows with 3014/3012 polling and an observed cmd 2015 par=0 apply step. This stays disabled in XIRO Lite until the destructive flow is proven safely."
+                note = "The legacy app issues cmd 3081 here, then follows with 3014/3012 polling and an observed cmd 2015 par=0 apply step. This stays disabled in XIRO Lite until the destructive flow is proven safely."
             ),
             ViewerCameraSettingRow(
                 label = "Format SD card",
@@ -275,6 +293,8 @@ private fun CameraViewerScreen(
     host: String,
     profile: LegacyDroneProfile,
     initialStreamProfile: StreamProfile,
+    initialPipelineMode: LiveVideoPipelineMode,
+    initialDecoderStrategy: FlightFeedDecoderStrategy,
     autoDebugCapture: Boolean,
     selectedHudItems: Set<String>,
     onExit: () -> Unit
@@ -291,6 +311,7 @@ private fun CameraViewerScreen(
     val captureFeedback = remember { CaptureFeedback(context) }
     val rootedLiveViewCaptureManager = remember { RootedLiveViewCaptureManager(context, localLibraryManager) }
     val rtspController = remember { RtspPlayerController() }
+    val viewerLogHandler = remember { Handler(Looper.getMainLooper()) }
     val relayProbe = remember { RelayProbe() }
     val rtspUrl = profile.primaryRtspUrl(host)
     val networkInfo = detector.detect()
@@ -341,6 +362,8 @@ private fun CameraViewerScreen(
     var recordingStartedAtMs by remember { mutableLongStateOf(0L) }
     var recordingElapsedMs by remember { mutableLongStateOf(0L) }
     var streamProfile by remember(profile.id, initialStreamProfile) { mutableStateOf(initialStreamProfile) }
+    var videoPipelineMode by remember(profile.id, initialPipelineMode) { mutableStateOf(initialPipelineMode) }
+    var flightFeedDecoderStrategy by remember(profile.id, initialDecoderStrategy) { mutableStateOf(initialDecoderStrategy) }
     var viewerSettingsPanelVisible by remember { mutableStateOf(false) }
     var viewerCameraSettingsTab by remember { mutableStateOf(ViewerCameraSettingsTab.CAMERA_PARAMETER) }
     var viewerPreviewResolution by remember { mutableStateOf("240p") }
@@ -369,6 +392,7 @@ private fun CameraViewerScreen(
     var automaticTcpFallbackUsed by remember { mutableStateOf(false) }
     var previewKickToken by remember { mutableIntStateOf(0) }
     var debugCaptureStatus by remember { mutableStateOf("") }
+    var activeDebugCaptureSession by remember { mutableStateOf<RootedLiveViewCaptureSession?>(null) }
 
     val logs = remember { mutableStateListOf<String>() }
     val debugModeEnabled = uiPrefs.getBoolean("debug_mode_enabled", false)
@@ -406,8 +430,17 @@ private fun CameraViewerScreen(
 
     fun log(message: String) {
         val rendered = "${cameraTimestamp(System.currentTimeMillis())}  $message"
-        logs.add(0, rendered)
-        while (logs.size > 80) logs.removeAt(logs.lastIndex)
+        val appendLogEntry = {
+            logs.add(0, rendered)
+            while (logs.size > 80) {
+                logs.removeAt(logs.lastIndex)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            appendLogEntry()
+        } else {
+            viewerLogHandler.post(appendLogEntry)
+        }
         Log.d("XiroViewer", message)
     }
 
@@ -465,6 +498,10 @@ private fun CameraViewerScreen(
     DisposableEffect(Unit) {
         LiveViewSessionRegistry.setViewerActive(true)
         onDispose {
+            activeDebugCaptureSession?.let { session ->
+                rootedLiveViewCaptureManager.stopCapture(session)
+                Log.d("CameraViewerActivity", "Requested stop for rooted live-view combo capture")
+            }
             LiveViewSessionRegistry.setViewerActive(false)
         }
     }
@@ -514,9 +551,10 @@ private fun CameraViewerScreen(
         if (now - lastAutoReloadAtMs < 15_000L) return
         lastAutoReloadAtMs = now
         val isPreemptiveRefresh = reason.contains("preemptive", ignoreCase = true)
+        val isStartupNoFrameRecovery = reason.contains("no live frames after", ignoreCase = true)
         if (
             usesLegacyXplorerLiveViewPatch &&
-            !liveFrameRendered &&
+            isStartupNoFrameRecovery &&
             !streamProfile.forceRtpTcp &&
             !automaticTcpFallbackUsed
         ) {
@@ -528,25 +566,31 @@ private fun CameraViewerScreen(
         recoveryFrameBitmap = rtspController.captureFrame()?.copy(Bitmap.Config.ARGB_8888, false)
         autoRecoveryPending = true
         autoRecoveryMessageToken += 1
-        val messageToken = autoRecoveryMessageToken
         recoveryMessage = null
         log("RTSP session watcher: $reason")
-        scheduleHardRtspRestart(reason, messageToken)
-        scope.launch {
-            delay(2_000)
-            if (!autoRecoveryPending || autoRecoveryMessageToken != messageToken) return@launch
-            recoveryMessage = if (isPreemptiveRefresh) {
-                "Refreshing live feed before the camera RTSP session expires..."
-            } else {
-                "Live feed stalled. Reloading stream..."
-            }
-        }
+        scheduleHardRtspRestart(reason, autoRecoveryMessageToken)
     }
 
-    LaunchedEffect(Unit) {
-        while (true) {
+    LaunchedEffect(liveTelemetryPackets.firstOrNull()?.timestampMs) {
+        val latestTimestampMs = liveTelemetryPackets.firstOrNull()?.timestampMs
+        if (latestTimestampMs == null || latestTimestampMs <= 0L) {
             telemetryNowMs = System.currentTimeMillis()
-            delay(1_000)
+            return@LaunchedEffect
+        }
+
+        telemetryNowMs = System.currentTimeMillis()
+        while (true) {
+            val ageMs = (System.currentTimeMillis() - latestTimestampMs).coerceAtLeast(0L)
+            val nextDelayMs = when {
+                ageMs < VIEWER_TELEMETRY_STALE_AFTER_MS ->
+                    (VIEWER_TELEMETRY_STALE_AFTER_MS - ageMs) + VIEWER_TELEMETRY_REFRESH_SLACK_MS
+                ageMs < VIEWER_TELEMETRY_LOST_AFTER_MS ->
+                    (VIEWER_TELEMETRY_LOST_AFTER_MS - ageMs) + VIEWER_TELEMETRY_REFRESH_SLACK_MS
+                else -> break
+            }.coerceAtLeast(VIEWER_TELEMETRY_REFRESH_SLACK_MS)
+
+            delay(nextDelayMs)
+            telemetryNowMs = System.currentTimeMillis()
         }
     }
 
@@ -1104,6 +1148,7 @@ private fun CameraViewerScreen(
                 appPid = android.os.Process.myPid()
             )
             captureResult.onSuccess { session ->
+                activeDebugCaptureSession = session
                 debugCaptureStatus = "Combo log running: ${session.transportFolderName} -> ${session.folder.absolutePath}"
                 log(
                     "Debug combo capture started: ${session.transportFolderName} " +
@@ -1179,14 +1224,16 @@ private fun CameraViewerScreen(
         if (!hjLogRecorder.currentState().isActive) return@LaunchedEffect
         if (latestPacket.timestampMs == lastLoggedPacketTimestamp) return@LaunchedEffect
         lastLoggedPacketTimestamp = latestPacket.timestampMs
-        hjLogStatus = hjLogRecorder.appendPacket(latestPacket).statusText
+        hjLogRecorder.appendPacket(latestPacket)
     }
 
-    LaunchedEffect(networkInfo.localIp, relayHost) {
+    LaunchedEffect(networkInfo.localIp, relayHost, playerActive) {
         if (networkInfo.localIp?.startsWith("192.168.2.") != true) return@LaunchedEffect
+        relayProbeResults = relayProbe.probeSettingsRootLiveView(relayHost)
+        if (playerActive) return@LaunchedEffect
         while (true) {
-            relayProbeResults = relayProbe.probeSettingsRootLiveView(relayHost)
             delay(10_000)
+            relayProbeResults = relayProbe.probeSettingsRootLiveView(relayHost)
         }
     }
 
@@ -1200,18 +1247,26 @@ private fun CameraViewerScreen(
             if (cameraStorageResults.isEmpty()) {
                 cameraStorageResults = telemetryProbe.readCameraStorage(host)
             }
-            while (true) {
-                val keepAlive = telemetryProbe.readLiveViewKeepAlive(host)
-                if (!keepAlive.status.startsWith("HTTP 200")) {
-                    log("Live View keepalive ${keepAlive.label}: ${keepAlive.status}")
-                }
-                delay(5_000)
-            }
+            return@LaunchedEffect
         } else {
             while (true) {
                 cameraStorageResults = telemetryProbe.readCameraStorage(host)
                 delay(10_000)
             }
+        }
+    }
+
+    LaunchedEffect(networkInfo.localIp, host, playerActive, profile.id, usesLegacyXplorerLiveViewPatch) {
+        if (!usesLegacyXplorerLiveViewPatch || !playerActive) return@LaunchedEffect
+        if (networkInfo.localIp.isNullOrBlank()) return@LaunchedEffect
+
+        log("Legacy live-view keepalive: starting camera cmd 3012 loop")
+        while (playerActive) {
+            val keepAliveResult = telemetryProbe.readLiveViewKeepAlive(host)
+            if (!keepAliveResult.status.startsWith("HTTP 200")) {
+                log("Legacy live-view keepalive failed: ${keepAliveResult.status}")
+            }
+            delay(2_500)
         }
     }
 
@@ -1306,6 +1361,8 @@ private fun CameraViewerScreen(
                 rtspUrl = rtspUrl,
                 reloadToken = reloadToken,
                 streamProfile = streamProfile,
+                videoPipelineMode = videoPipelineMode,
+                decoderStrategy = flightFeedDecoderStrategy,
                 rtspController = rtspController,
                 recoveryFrameBitmap = recoveryFrameBitmap,
                 debugRtspMessages = debugModeEnabled,
@@ -1338,6 +1395,8 @@ private fun CameraViewerScreen(
                 rtspUrl = rtspUrl,
                 reloadToken = reloadToken,
                 streamProfile = streamProfile,
+                videoPipelineMode = videoPipelineMode,
+                decoderStrategy = flightFeedDecoderStrategy,
                 rtspController = rtspController,
                 recoveryFrameBitmap = recoveryFrameBitmap,
                 debugRtspMessages = debugModeEnabled,
@@ -1445,10 +1504,6 @@ private fun CameraViewerScreen(
                             )
                         }
                     }
-                    if (debugModeEnabled) {
-                        XiroSecondaryButton(onClick = { exportDebugLog() }) { Text("Export Debug Log") }
-                        XiroSecondaryButton(onClick = { debugExpanded = !debugExpanded }) { Text(if (debugExpanded) "Debug ^" else "Debug v") }
-                    }
                 }
             }
         }
@@ -1459,12 +1514,17 @@ private fun CameraViewerScreen(
         ) {
             ViewerLiveSettingsPanel(
                 showTransportControls = debugModeEnabled && supportsStabilityToggle,
+                showDebugControls = debugModeEnabled,
+                showDiagnosticNotes = debugModeEnabled,
                 streamProfile = streamProfile,
                 onSelectStreamProfile = { selectedProfile ->
                     streamProfile = selectedProfile
                     automaticTcpFallbackUsed = false
                     log("Live preview stream profile set to ${streamProfile.label} (${streamProfile.transportLabel})")
                 },
+                debugExpanded = debugExpanded,
+                onExportDebugLog = { exportDebugLog() },
+                onToggleDebugPanel = { debugExpanded = !debugExpanded },
                 selectedTab = viewerCameraSettingsTab,
                 onSelectTab = { viewerCameraSettingsTab = it },
                 previewResolution = viewerPreviewResolution,
@@ -1526,18 +1586,28 @@ private fun CameraViewerScreen(
             }
         }
 
-        recoveryMessage?.let {
-            XiroRaisedCard(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 24.dp),
+        AnimatedVisibility(
+            visible = autoRecoveryPending,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 28.dp, bottom = 26.dp)
+        ) {
+            XiroPillSurface(
+                shape = RoundedCornerShape(18.dp),
                 containerColor = XiroDesignTokens.SurfaceOverlay
             ) {
-                Text(
-                    text = it,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    color = Color.White
-                )
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 14.dp, vertical = 14.dp)
+                        .size(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.fillMaxSize(),
+                        color = XiroDesignTokens.AccentBright,
+                        strokeWidth = 3.dp
+                    )
+                }
             }
         }
 
@@ -1684,6 +1754,7 @@ private fun CameraPreviewSurface(
     rtspUrl: String,
     reloadToken: Int,
     streamProfile: StreamProfile,
+    videoPipelineMode: LiveVideoPipelineMode,
     rtspController: RtspPlayerController,
     recoveryFrameBitmap: Bitmap?,
     debugRtspMessages: Boolean,
@@ -1692,7 +1763,8 @@ private fun CameraPreviewSurface(
     onRecoveryRequested: (String) -> Unit,
     onLog: (String) -> Unit,
     onSwapRequested: (() -> Unit)? = null,
-    overlayLabel: String? = null
+    overlayLabel: String? = null,
+    decoderStrategy: FlightFeedDecoderStrategy = FlightFeedDecoderStrategy.AUTO
 ) {
     Box(
         modifier = modifier
@@ -1706,18 +1778,74 @@ private fun CameraPreviewSurface(
             .background(Color.Black)
     ) {
         if (playerActive) {
-            RtspPlayer(
-                url = rtspUrl,
-                reloadToken = reloadToken,
-                streamProfile = streamProfile,
-                debugRtspMessages = debugRtspMessages,
-                modifier = Modifier.fillMaxSize(),
-                controller = rtspController,
-                onFirstFrameRendered = onFirstFrameRendered,
-                onPlaybackResumed = onPlaybackResumed,
-                onRecoveryRequested = onRecoveryRequested,
-                onLog = onLog
-            )
+            when (videoPipelineMode) {
+                LiveVideoPipelineMode.MEDIA3 -> RtspPlayer(
+                    url = rtspUrl,
+                    reloadToken = reloadToken,
+                    streamProfile = streamProfile,
+                    debugRtspMessages = debugRtspMessages,
+                    modifier = Modifier.fillMaxSize(),
+                    controller = rtspController,
+                    onFirstFrameRendered = onFirstFrameRendered,
+                    onPlaybackResumed = onPlaybackResumed,
+                    onRecoveryRequested = onRecoveryRequested,
+                    onLog = onLog
+                )
+
+                LiveVideoPipelineMode.GSTREAMER -> GStreamerSurface(
+                    url = rtspUrl,
+                    reloadToken = reloadToken,
+                    streamProfile = streamProfile,
+                    debugFeedMessages = debugRtspMessages,
+                    modifier = Modifier.fillMaxSize(),
+                    controller = rtspController,
+                    onFirstFrameRendered = onFirstFrameRendered,
+                    onPlaybackResumed = onPlaybackResumed,
+                    onRecoveryRequested = onRecoveryRequested,
+                    onLog = onLog
+                )
+
+                LiveVideoPipelineMode.LEGACY_FLIGHT -> LegacyFlightFeedSurface(
+                    url = rtspUrl,
+                    reloadToken = reloadToken,
+                    streamProfile = streamProfile,
+                    decoderStrategy = decoderStrategy,
+                    modifier = Modifier.fillMaxSize(),
+                    controller = rtspController,
+                    debugFeedMessages = debugRtspMessages,
+                    onFirstFrameRendered = onFirstFrameRendered,
+                    onPlaybackResumed = onPlaybackResumed,
+                    onRecoveryRequested = onRecoveryRequested,
+                    onLog = onLog
+                )
+
+                LiveVideoPipelineMode.LEGACY_FLIGHT_GL -> LegacyFlightFeedGlSurface(
+                    url = rtspUrl,
+                    reloadToken = reloadToken,
+                    streamProfile = streamProfile,
+                    decoderStrategy = decoderStrategy,
+                    modifier = Modifier.fillMaxSize(),
+                    controller = rtspController,
+                    debugFeedMessages = debugRtspMessages,
+                    onFirstFrameRendered = onFirstFrameRendered,
+                    onPlaybackResumed = onPlaybackResumed,
+                    onRecoveryRequested = onRecoveryRequested,
+                    onLog = onLog
+                )
+
+                LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE -> LegacyFlightFeedSoftwareSurface(
+                    url = rtspUrl,
+                    reloadToken = reloadToken,
+                    streamProfile = streamProfile,
+                    modifier = Modifier.fillMaxSize(),
+                    controller = rtspController,
+                    debugFeedMessages = debugRtspMessages,
+                    onFirstFrameRendered = onFirstFrameRendered,
+                    onPlaybackResumed = onPlaybackResumed,
+                    onRecoveryRequested = onRecoveryRequested,
+                    onLog = onLog
+                )
+            }
         }
 
         recoveryFrameBitmap?.let { bitmap ->
@@ -1911,10 +2039,16 @@ private fun ViewerWarningBanner(warning: FlightWarning) {
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun ViewerLiveSettingsPanel(
     showTransportControls: Boolean,
+    showDebugControls: Boolean,
+    showDiagnosticNotes: Boolean,
     streamProfile: StreamProfile,
     onSelectStreamProfile: (StreamProfile) -> Unit,
+    debugExpanded: Boolean,
+    onExportDebugLog: () -> Unit,
+    onToggleDebugPanel: () -> Unit,
     selectedTab: ViewerCameraSettingsTab,
     onSelectTab: (ViewerCameraSettingsTab) -> Unit,
     previewResolution: String,
@@ -1939,10 +2073,11 @@ private fun ViewerLiveSettingsPanel(
     ) {
         XiroDialogPanel(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 82.dp, end = 14.dp, start = 92.dp)
-                .widthIn(max = 520.dp)
-                .height(540.dp)
+                .align(Alignment.TopCenter)
+                .padding(top = 72.dp, start = 18.dp, end = 18.dp)
+                .fillMaxWidth(0.86f)
+                .widthIn(max = 860.dp)
+                .height(560.dp)
                 .clickable(
                     interactionSource = panelInteraction,
                     indication = null,
@@ -1958,8 +2093,17 @@ private fun ViewerLiveSettingsPanel(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.Top
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    XiroIconSurface {
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                                contentDescription = "Back",
+                                tint = XiroDesignTokens.TextPrimary
+                            )
+                        }
+                    }
                     Column(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -1969,17 +2113,6 @@ private fun ViewerLiveSettingsPanel(
                             color = XiroDesignTokens.TextPrimary,
                             style = MaterialTheme.typography.titleLarge
                         )
-                        Text(
-                            text = "Legacy XIRO Xplorer tabs recreated here. Capture findings are highlighted; unknown command mappings stay grayed out for now.",
-                            color = XiroDesignTokens.TextSecondary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    XiroSecondaryButton(
-                        onClick = onDismiss,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Text("Close")
                     }
                 }
 
@@ -2002,9 +2135,9 @@ private fun ViewerLiveSettingsPanel(
                             color = XiroDesignTokens.TextSecondary,
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             ViewerStreamProfileChip(
                                 label = "Auto (Legacy UDP)",
@@ -2032,9 +2165,37 @@ private fun ViewerLiveSettingsPanel(
                     )
                 }
 
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                if (showDebugControls) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Debug tools",
+                            color = XiroDesignTokens.AccentBright,
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            XiroSecondaryButton(onClick = onExportDebugLog) {
+                                Text("Export Debug Log")
+                            }
+                            XiroSecondaryButton(onClick = onToggleDebugPanel) {
+                                Text(if (debugExpanded) "Hide Debug Panel" else "Show Debug Panel")
+                            }
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(XiroDesignTokens.BorderLight)
+                    )
+                }
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     ViewerCameraSettingsTab.entries.forEach { tab ->
                         XiroToggleChip(
@@ -2059,6 +2220,7 @@ private fun ViewerLiveSettingsPanel(
                 ).forEach { setting ->
                     ViewerCameraSettingCard(
                         setting = setting,
+                        showDiagnosticNotes = showDiagnosticNotes,
                         controlsEnabled = controlsEnabled,
                         onOptionSelected = setting.actionKey?.let { settingKey ->
                             { option -> onSettingSelected(settingKey, option) }
@@ -2092,6 +2254,7 @@ private fun ViewerStreamProfileChip(
 @Composable
 private fun ViewerCameraSettingCard(
     setting: ViewerCameraSettingRow,
+    showDiagnosticNotes: Boolean,
     controlsEnabled: Boolean,
     onOptionSelected: ((String) -> Unit)? = null
 ) {
@@ -2140,20 +2303,22 @@ private fun ViewerCameraSettingCard(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                XiroPillSurface(
-                    shape = RoundedCornerShape(14.dp),
-                    containerColor = when (setting.evidence) {
-                        ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.Accent
-                        ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.SurfaceOverlay
-                        ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.SurfaceBottom
+                if (setting.evidence.label.isNotBlank()) {
+                    XiroPillSurface(
+                        shape = RoundedCornerShape(14.dp),
+                        containerColor = when (setting.evidence) {
+                            ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.Accent
+                            ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.SurfaceOverlay
+                            ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.SurfaceBottom
+                        }
+                    ) {
+                        Text(
+                            text = setting.evidence.label,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            color = XiroDesignTokens.TextPrimary,
+                            style = MaterialTheme.typography.labelSmall
+                        )
                     }
-                ) {
-                    Text(
-                        text = setting.evidence.label,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        color = XiroDesignTokens.TextPrimary,
-                        style = MaterialTheme.typography.labelSmall
-                    )
                 }
             }
 
@@ -2179,7 +2344,7 @@ private fun ViewerCameraSettingCard(
                 }
             }
 
-            if (setting.note.isNotBlank()) {
+            if (showDiagnosticNotes && setting.note.isNotBlank()) {
                 Text(
                     text = setting.note,
                     color = XiroDesignTokens.TextSecondary,
@@ -2200,13 +2365,12 @@ private fun ViewerSettingChip(
     onClick: (() -> Unit)? = null
 ) {
     val containerColor = when {
-        selected && evidence == ViewerCameraSettingEvidence.VERIFIED -> XiroDesignTokens.Accent
-        selected && evidence == ViewerCameraSettingEvidence.OBSERVED -> XiroDesignTokens.SurfaceOverlay
+        selected && evidence != ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.Accent
         selected -> XiroDesignTokens.SurfaceInset
         else -> XiroDesignTokens.SurfaceBottom
     }
     val textColor = when {
-        selected && evidence != ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.TextPrimary
+        selected -> XiroDesignTokens.TextPrimary
         evidence == ViewerCameraSettingEvidence.PENDING -> XiroDesignTokens.TextMuted
         else -> XiroDesignTokens.TextSecondary
     }

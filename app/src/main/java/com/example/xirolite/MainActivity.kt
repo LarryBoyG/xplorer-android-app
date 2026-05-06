@@ -115,6 +115,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
@@ -198,10 +199,16 @@ private enum class SettingsPage {
     DEBUG
 }
 
+private const val RELAY_BOUND_CAMERA_HINT_PREF_KEY = "relay_bound_camera_hint"
+private const val RELAY_BOUND_CAMERA_HINT_AT_MS_PREF_KEY = "relay_bound_camera_hint_at_ms"
+private const val RELAY_BIND_RECONNECT_GRACE_MS = 45_000L
+private const val FULL_CHANGELOG_URL = "https://github.com/LarryBoyG/xplorer-android-app/releases"
+
 private data class ReleaseNotes(
     val version: String,
     val changes: List<String>,
-    val knownIssues: List<String>
+    val knownIssues: List<String>,
+    val fullChangelogUrl: String
 )
 
 private data class AboutInfo(
@@ -218,6 +225,9 @@ private data class AboutInfo(
     val issueTrackerUrl: String,
     val mapAttribution: String,
     val mapEngineAttribution: String,
+    val mediaRuntimeAttribution: String? = null,
+    val mediaRuntimeLicenseSummary: String? = null,
+    val mediaRuntimeNotice: String? = null,
     val licenseSummary: String,
     val proprietaryNotice: String,
     val communityThanks: String
@@ -279,156 +289,46 @@ private data class LibraryMediaInfo(
     val durationText: String? = null
 )
 
+private fun legacyCurrentReleaseNotesUnused(): ReleaseNotes = ReleaseNotes(
+    version = BuildConfig.VERSION_NAME,
+    changes = listOf(
+        "When RTP is still flowing but XIRO Lite is carrying roughly 700–800 ms or more of backlog, the player now tries a direct queue trim toward the buffered live edge instead of only grinding delay down with playback speed.",
+        "This new live-edge jump is intentionally gated on healthy incoming RTP, so it aims to cut self-imposed lag without throwing away a stream that is already struggling.",
+        "The focus of this pass is the remaining 'stable but late' behavior from the latest rooted flight captures, where XIRO Lite stayed up well but still felt behind XIRO Xplore."
+    ),
+    knownIssues = listOf(
+        "TCP-first live view is still debug-only and does not currently deliver a usable video stream from the XIRO camera.",
+        "Most live camera settings beyond Preview Resolution, Image Resolution, and Anti-blink are still intentionally pending until their legacy command mappings are captured safely."
+    ),
+    fullChangelogUrl = FULL_CHANGELOG_URL
+)
+
+private fun legacyCurrentReleaseNotesSurfaceViewUnused(): ReleaseNotes = ReleaseNotes(
+    version = BuildConfig.VERSION_NAME,
+    changes = listOf(
+        "Flight Feed now renders through a dedicated SurfaceView path instead of the old TextureView, which is closer to the legacy app’s surface-based presentation and avoids an extra compositor step on older phones.",
+        "The experimental custom decoder is now configured with an explicit 30 fps / 30 operating-rate hint so its intended cadence is described directly instead of being left entirely to implicit surface pacing.",
+        "This pass targets the new 'jittery even right next to the drone' behavior, because the latest rooted Flight Feed logs showed healthy frame throughput with no queue backlog, pointing at render smoothness rather than network starvation."
+    ),
+    knownIssues = listOf(
+        "Flight Feed is experimental and currently targets the legacy UDP path only; TCP-first remains a debug-only Media3 transport mode.",
+        "Most live camera settings beyond Preview Resolution, Image Resolution, and Anti-blink are still intentionally pending until their legacy command mappings are captured safely."
+    ),
+    fullChangelogUrl = FULL_CHANGELOG_URL
+)
+
 private fun currentReleaseNotes(): ReleaseNotes = ReleaseNotes(
     version = BuildConfig.VERSION_NAME,
     changes = listOf(
-        "The Live Camera Settings transport selector is now hidden from normal users and only appears when debug mode is enabled, keeping the public Live View UI focused on the legacy-faithful UDP path.",
-        "Opening the Live Camera Settings panel now hides the right-side PHOTO and VIDEO mode switcher plus the shutter control, so the settings dialog no longer has capture controls floating across it.",
-        "The System Settings tab now records the latest factory-reset capture finding directly in the UI, marking Camera Factory Reset as an observed legacy action tied to cmd 3081 instead of leaving it completely unknown.",
-        "The settings overlay now reads like a dedicated dialog instead of competing visually with active capture controls from the live camera view.",
-        "XIRO Lite's local RTSP UDP transport now accepts full-size XIRO camera datagrams instead of relying on Media3's smaller default packet buffer, which was a poor fit for the camera's repeated ~8200 byte H.264 payloads.",
-        "Dedicated Live View now asks Android for a much larger UDP socket receive buffer on the XIRO RTP path and logs the actual buffer size the OS grants, so future captures can confirm whether app-side UDP pressure is still a factor.",
-        "Fresh UDP-first captures showed sustained H.264 traffic with zero tcpdump-level loss while the picture still arrived green and patchy, pointing away from missing transport and toward packet truncation or app-side socket pressure inside XIRO Lite.",
-        "TCP-first still barely receives any real interleaved media from the camera, so this release focuses on the UDP path that actually carries video and removes a likely source of silent H.264 datagram truncation there.",
-        "Live View now logs the full ordered list of available H.264 decoders and the exact decoder Media3 actually initializes, so future distortion captures can be tied to a real codec path instead of guesswork.",
-        "The XIRO H.264 RTP reader now treats aggregated STAP-A packets as real keyframe candidates, detects embedded SPS, PPS, and IDR units, and flags those access units as keyframes instead of always marking them non-key.",
-        "After RTP packet loss, the reader now distinguishes between loss inside an in-flight access unit versus loss between access-unit boundaries, dropping the damaged unit cleanly while still forcing a wait for the next keyframe.",
-        "Preview Resolution, Image Resolution, and Anti-blink are now clickable in the Live View camera-settings panel instead of being read-only evidence chips.",
-        "Preview Resolution now sends the decoded legacy cmd 2010 stream-size request wrapped in the original cmd 2015 apply sequence, then rebuilds RTSP so the selected preview size can actually take effect.",
-        "Image Resolution and Anti-blink now send their captured legacy camera commands directly from the gear panel, while the still-unknown camera settings remain intentionally grayed out.",
-        "Live View now opens a real camera-settings panel from the gear icon instead of the old one-line stream dropdown, giving the viewer a legacy-style home for stream controls and future camera tuning.",
-        "The new Live View settings panel now includes the four legacy XIRO tabs: Camera Parameter, Picture Parameter, Photograph Setting, and System settings.",
-        "Verified capture findings now appear directly inside that panel, so Preview Resolution is clearly shown as the live RTSP stream-size control while still-unknown commands stay intentionally grayed out.",
-        "Image Resolution and Anti-blink are now labeled with the capture evidence we decoded from the legacy app, making it clearer which camera settings affect the live stream and which ones are still-photo or image-processing controls.",
-        "Live View now prefers software H.264 decoders when available for the XIRO RTSP stream, instead of always taking the phone's default hardware AVC decoder first.",
-        "Dedicated RTSP playback now disables asynchronous MediaCodec queueing and enables decoder fallback, making the decoder path more conservative for the XIRO camera's older live stream.",
-        "Fresh captures and the camera's SDP confirmed the stream is truly H264/90000 with a 320x240 SPS, so the remaining green and patched picture points much more toward decoder-path behavior than an H.265 versus H.264 family mismatch.",
-        "This release specifically targets the Android 16 c2.qti.avc.decoder hardware path as a likely source of the persistent partial-green output now that real video is finally arriving over both direct-camera and extender sessions.",
-        "XIRO Lite now reinjects the cached H.264 SPS and PPS initialization NAL units before recovery IDR keyframes, giving the decoder a fresh codec context after startup resync or packet damage.",
-        "The local RTP H.264 reader now marks SPS and PPS reinjection as required whenever it seeks or sees RTP sequence loss, then clears that flag only after a clean keyframe is successfully committed.",
-        "Fresh XIRO Lite captures finally showed real extender and direct-camera video arriving, but the remaining green and blocky picture corruption looked much more like decoder resynchronization trouble than a total transport failure.",
-        "Packet analysis showed XIRO Lite was still seeing a small amount of real RTP loss while the matching legacy capture stayed clean, so this release focuses on recovering cleanly on the next IDR instead of continuing with stale codec state.",
-        "XIRO Lite now reproduces the legacy app's client-side UDP punch on XIRO RTSP SETUP by sending the same CE FA ED FE packet from the bound client RTP port toward the camera's announced server_port, then repeating it once after a short delay.",
-        "That legacy UDP punch is now wired into the local RTSP fork itself, so the extender path can prime the repeater relay at the same moment the original app does instead of waiting passively for incoming media.",
-        "Fresh full rooted captures showed the legacy app sends two client RTP packets to 192.168.1.254:6970 immediately after UDP SETUP while XIRO Lite sent none, making this a much stronger extender-path target than another round of HTTP camera command guesses.",
-        "Dedicated Live View now uses a relay-safe socket/session status snapshot for extender telemetry instead of falling through to the repeater's failing HTTP JSON endpoints during flight.",
-        "Background repeater auto-refresh is now limited to the Settings root page, so Camera, Telemetry, Library, and dedicated Live View no longer keep hammering 192.168.2.254 with POST /, /cgi-bin/relay, /relay, and /call probes while video is trying to start.",
-        "The patched local Media3 H.264 RTP reader now buffers complete access units before committing them to the decoder, instead of pushing partial live-view fragments straight through sample output.",
-        "Live View now waits for the first clean IDR keyframe before showing H.264 video, matching the legacy app's visible needFirstIFrame and gotFirstIFrame behavior more closely during startup.",
-        "If RTP packet loss damages a fragmented H.264 access unit, XIRO Lite now drops the rest of that broken unit and waits for the next keyframe instead of smearing corrupted slices across the live picture.",
-        "Fresh direct-camera captures showed XIRO Lite now receives nearly legacy-level UDP RTP volume again, so this release shifts from make media arrive to make arriving media recover cleanly after packet loss or dirty startup.",
-        "TCP-interleaved Stability mode now keeps RTSP sessions alive much longer before declaring the stream dead, backing away from the newer 8 second Media3 timeout experiment that was likely too aggressive for XIRO camera TCP sessions.",
-        "Dedicated Live View now waits much longer before hard-restarting a no-frame TCP stability session, reducing the repeated restart churn that could interrupt slower first-frame startup on the XIRO camera.",
-        "The main app now uses a shared Live View activity flag so hidden profile-detection, camera-storage, and relay-root probe loops pause as soon as the dedicated viewer is open.",
-        "The patched local Media3 RTSP parser now accepts fixed-length RTSP bodies without requiring a trailing newline, matching the XIRO camera's GET_PARAMETER reply format instead of throwing a receiver exception.",
-        "Fresh rooted captures confirmed the camera answers the first GET_PARAMETER with the 10-byte body 2013.07.03 and no trailing LF, and XIRO Lite now accepts that legacy camera behavior cleanly.",
-        "This removes the repeated Message body is empty or does not end with a LF crash in the RTSP receiver, which was tearing down Live View control handling right after the first legacy keepalive reply.",
-        "Live View now restores a legacy-style 8 second RTP packet timeout instead of the newer 30 second packet wait, bringing XIRO Lite's transport startup behavior closer to the original app's shorter socket-timeout model.",
-        "The patched local Media3 RTSP fork now lets UDP and TCP packet channels surface packet-quiet time back to the loader, so XIRO Lite can react sooner when no media ever arrives instead of silently waiting inside the channel layer.",
-        "If legacy UDP startup never receives a first RTP packet, the RTSP module now completes that dead startup inside Media3 so the built-in UDP-to-TCP retry can engage automatically instead of leaving Live View on a prolonged black screen.",
-        "Debug mode now adds dedicated UDP First + Log and TCP First + Log camera launchers, so rooted XIRO Lite test phones can open Live View in a fixed transport mode without manually reconfiguring the viewer first.",
-        "Opening Live View from those debug launchers now automatically starts a rooted 60-second combo capture that saves a tcpdump pcap, app-process logcat, and metadata file into XIRO/live_view_logs/UDP or XIRO/live_view_logs/TCP.",
-        "Dedicated Live View now accepts an explicit startup stream profile from the Camera tab, making side-by-side UDP-first and TCP-first transport testing easier on the same device.",
-        "Viewer debug lines are now mirrored into Android logcat under the XiroViewer tag, so the automatic combo log captures the same RTSP/recovery messages shown inside XIRO Lite.",
-        "The forced XIRO Wi-Fi route-binding experiment has been rolled back for now, so Live View is back on Android's default route behavior while RTSP transport debugging continues.",
-        "XIRO Xplorer Live View now follows the successful legacy post-PLAY ordering more closely by sending the captured 3014 / 3012 / 3012 / 3014 / 3012 burst before 3001, then syncing the clock and only then issuing 2016.",
-        "The XIRO Xplorer startup path no longer front-loads camera clock sync before RTSP; the date/time sync now rides in the same post-PLAY sequence seen in the successful legacy captures.",
-        "Remote controller battery is now read through the recovered legacy TCP 6666 getRemoteElectricity callback, using the validated 1A 06 AC 06 D2 request and calibrated raw-to-percent mapping from 40%, 60%, 80%, and 100% captures.",
-        "Remote battery polling now keeps the extender TCP 6666 relay channel open and reuses it for repeat getRemoteElectricity requests, matching the legacy app's long-lived relay-control behavior more closely.",
-        "Storage setup now uses an in-app permission prompt before attempting to create the shared XIRO folder tree, instead of jumping to Android storage settings during launch.",
-        "If shared storage access is not granted, XIRO Lite can continue with app-private storage for the session while still keeping previews, downloads, maps, and HJ logs functional.",
-        "XIRO Xplorer Live View now runs a legacy-style camera init sequence before RTSP startup and before hard RTSP rebuilds using the recovered 2009 / 2031 par=2 / 1003 / 3012 priming requests seen in fresh legacy captures.",
-        "XIRO Xplorer Live View now sends the legacy preview kick seen in fresh captures by issuing 3001 par=1 and 2016 shortly after startup, moving the camera into live video mode more like the original app.",
-        "The XIRO live-preview 3001 par=1 / 2016 kick now rides on the same guaranteed startup and hard-restart path that turns RTSP back on, instead of relying on a separate delayed side effect.",
-        "XIRO Xplorer 4K now uses the same delayed RTSP startup, preview kick, stream-stability options, and automatic TCP fallback path as the standard XIRO Xplorer profile.",
-        "XIRO Xplorer Live View now uses CMD 3012 as its steady in-view keepalive, closer to the legacy app's repeated live-view camera polling pattern.",
-        "While legacy live view is active, the viewer now stops hammering 1003 / 2009 / 3014 every few seconds and keeps the last known storage data instead, reducing camera-side HTTP churn during RTSP playback.",
-        "The main app now suspends background profile-detection, camera-storage, and relay probe loops whenever it is no longer the foreground activity, so opening dedicated Live View no longer leaves hidden camera probes competing behind it.",
-        "Live View stream Auto now follows the captured legacy RTSP setup by using UDP RTP by default, while the TCP-interleaved path remains available as the Stability fallback.",
-        "Live View now has a startup watchdog for black-screen cases where RTSP stays in BUFFERING and no first frame ever renders.",
-        "If XIRO Xplorer still fails to render a first frame over legacy UDP, XIRO Lite now automatically falls back to the Stability TCP-interleaved profile instead of looping the same dead startup path.",
-        "Legacy UDP RTP startup now gives the camera more time to produce the first video packets before Media3 treats the session as end-of-input, reducing the repeated ~12-second teardown loop seen in fresh XIRO Lite captures.",
-        "Legacy UDP stream mode no longer performs the old 26-second proactive RTSP rebuild, and its stale/buffering recovery windows are more tolerant so short weak-link retransmits do not immediately tear down the player.",
-        "XIRO Lite now uses a patched local Media3 RTSP module so the active RTSP session sends the legacy app's GET_PARAMETER keepalive to /xxxx.mov/track1 immediately after PLAY, then about every 3 seconds.",
-        "Debug Mode now enables Media3 RTSP request/response logging for Live View, giving future logcat captures a way to verify ExoPlayer keepalive behavior against the legacy app.",
-        "Flight-critical telemetry now goes explicitly stale when UDP 6800 packets stop, so old GPS lock, aircraft power, gear, and elevation values do not remain green during a link loss.",
-        "Legacy UDP stream recovery now waits longer during buffering and uses a hard player restart when recovery is needed, matching the manual exit/re-enter path more closely.",
-        "Distance and map position now ignore no-lock GPS coordinates, preventing impossible distance spikes while the aircraft reports 0 satellites.",
-        "Live View camera clock sync now waits until after the first live video frame and a short stabilization delay to reduce startup contention with RTSP stream setup.",
-        "Aircraft low-battery warnings now use legacy-aligned return-home wording, making it clear that the flight controller may automatically begin RTH when aircraft power reaches the low-battery threshold.",
-        "Legacy UDP flight captures confirmed UDP[24..29] are HJ-compatible UTC timestamp bytes, so the debug/research labels now show them as time fields instead of misleading state bytes.",
-        "XIRO network detection now scans connected Wi-Fi networks instead of trusting only Android's active/default network, so the app can still recognize the extender when cellular remains the preferred internet route.",
-        "The launcher icon now correctly uses the mountain-and-radar XIRO Lite artwork, replacing the accidentally wired placeholder icon from the previous build attempt.",
-        "XIRO Lite now shows a mandatory launch disclaimer on every startup, and users must explicitly agree before continuing to use the app.",
-        "The launch disclaimer cannot be dismissed accidentally by tapping outside or pressing back, and it now offers a clear exit path for users who do not want to continue.",
-        "The startup flow now waits until the disclaimer is accepted before showing What's New, keeping launch messaging clearer and more deliberate.",
-        "The XIRO Lite header tagline now reads ReDiscover Your Sky, with the Re highlighted in XIRO green for a cleaner preservation-project identity.",
-        "Live View warning banners now appear at the bottom of the screen, leaving the top edge cleaner for telemetry chips and reducing feed obstruction.",
-        "The customizable Live View HUD now stays on a single row: chips compact themselves automatically and fall back to horizontal scrolling instead of wrapping onto a second line.",
-        "Offline maps now include a clear legend for Drone, You, and Home so the colored markers are easier to understand in both Live View and replay-map use.",
-        "XIRO Lite now shows an over-height warning when live Elevation exceeds the validated legal-height threshold, with the warning text automatically matching metric or imperial units.",
-        "Target Elevation now uses stricter sanity filtering so bogus target-height spikes are rejected before they can reach Telemetry or the HUD.",
-        "Taking a photo or starting/stopping video now keeps the last good frame visible while RTSP is interrupted, reducing the black-screen gap during camera commands.",
-        "Camera SD thumbnails are now cached into the XIRO Preview folder so reopening the Library tab does not have to re-fetch every remote preview over Wi-Fi.",
-        "Preview-cache entries no longer appear as fake local downloads: the Local tab is now HD-only and represents only media that has actually been saved into XIRO HD storage.",
-        "Remote preview caching now tags photo and video thumbnails separately so video preview images can still be identified correctly without creating duplicate Local entries.",
-        "The extender password wording now clearly refers to the Wi-Fi extender password, and the root Settings page no longer shows the confusing Blank value or echoes the typed password back after editing.",
-        "Live View now uses the PHOTO / VIDEO selector itself as the mode toggle, removing the old separate switch button and freeing up space on the right-side control rail.",
-        "A new gear menu in Live View now holds the stream profile selection, creating a cleaner home for future camera controls like ISO and brightness.",
-        "The live-view map inset is smaller, its attribution badge is less intrusive, and the inset tap-to-swap behavior is more reliable.",
-        "The HJ replay player now includes an offline map card that can draw the saved breadcrumb route, current replay point, and recovered home point using imported mapsforge regions.",
-        "Camera SD media now uses the same width-aware preview grid logic as local media, and remote videos now try best-effort thumbnails before falling back to plain placeholders.",
-        "Elevation decoding now treats the recovered height fields as signed values and keeps the last sane reading, preventing the old 6000 m spike bug in Live View.",
-        "The app now uses a more polished skeuomorphic design system with raised dark surfaces, white primary text, and green accent states across the main shell.",
-        "Settings dialogs, library overlays, download/info popups, and the HJ past-flight replay viewer now follow the same 3D visual language instead of mixing flat Material cards with the newer style.",
-        "Live View now shares the updated design treatment as well, while the bottom navigation bar and sliding tab/page animations remain intact.",
-        "Telemetry now exposes separate Elevation and Target Elevation fields based on the HJ-validated height decode work, instead of forcing a single generic altitude label.",
-        "SD Card Remaining storage now uses the recovered camera CMD 1003 photo count and CMD 2009 video-time values, matching the legacy app's remaining photo/movie-space display.",
-        "Telemetry now decodes live GPS coordinates from the HJ-compatible UDP packet layout, matching the same latitude/longitude positions previously validated through XIRO Assistant log playback.",
-        "Flight Mode now uses the field-observed XIRO threshold of 0-6 satellites as Attitude and 7+ satellites as GPS Mode, so low satellite counts no longer show as GPS-ready.",
-        "The Telemetry page now derives live speed and distance from the packet stream instead of leaving those fields blank, so motion becomes visible as soon as GPS coordinates begin changing in flight.",
-        "Wi-Fi telemetry now reflects only the relay-to-camera signal reported by the extender, so the Telemetry page no longer mixes in the phone's own Wi-Fi strength.",
-        "Top-bar telemetry labels are now cleaner and more honest: relay is shown as Wi-Fi, and SD Card / FOV no longer pretend to be decoded when they are still camera-side pending fields.",
-        "Wi-Fi telemetry now renders with traditional signal-strength bars so the extender-to-camera link is easier to read at a glance.",
-        "Preflight status rows now include live-view HUD toggles, so selected telemetry items can be added or removed from the live-view overlay without changing code.",
-        "GPS Sat, Aircraft Power, and Flight Mode now use richer status colors in both the Preflight card and the live-view HUD, matching the requested red / yellow / green thresholds.",
-        "Live View now uses a simple left-arrow exit control, and the Settings connection card text was cleaned up to reduce clutter.",
-        "The live-view HUD now sits in line with the exit control instead of dropping lower into the image area, making the selected telemetry chips easier to read while flying.",
-        "The Library tab now gives local media a more traditional gallery feel with swipe navigation, local video playback controls, and first-frame thumbnails for downloaded videos.",
-        "Remote camera photos now try legacy-style preview candidates before download, and the main navigation now slides both the page content and the selected tab highlight.",
-        "Exiting Live View while a video recording is active now sends a stop-video command first, matching the legacy app more closely and reducing the chance of half-finished video files.",
-        "Live View now uses a camera-style shutter control: photo mode gets a white dual-ring capture button with press feedback, and video mode gets a red record button with a live elapsed timer while recording.",
-        "Camera SD library parsing now strips query-style suffixes like ?del=1 before treating entries as real media, reducing ghost duplicates and unsafe remote-media handling.",
-        "Settings now include an app-wide units toggle, so Telemetry, Live View, and HJ flight-log replay can switch cleanly between metric and imperial distance/speed readouts.",
-        "Settings subpages now use simpler left-arrow navigation, Past Flights auto-populates from the XIRO hj folder without extra refresh clutter, and the replay player was simplified to a cleaner single-control layout.",
-        "The camera home screen icon now centers more reliably across device sizes, and Live View uses cleaner non-debug capture text plus a stronger shutter / record sound path.",
-        "The Camera tab hero now sits truly centered in the available pane, and the Live View right-side controls, mode selector, and warning banners no longer stretch awkwardly across the screen.",
-        "Compass calibration failure is now decoded from the legacy remote alarm bitmask at UDP[77], matching the legacy SDK MAGNETIC_ERROR flag and the captured compass-failure pcap.",
-        "The Library tab now hides low-level Camera SD command diagnostics in normal use, so empty-card and disconnected states stay cleaner unless Debug Mode is enabled.",
-        "Local Library tiles now size from the available card width instead of using a rigid thumbnail size, giving the grid a more symmetrical layout with less dead space on the right.",
-        "Live View HUD selections now preserve older saved Altitude and Baro HGT layouts by automatically migrating them to the new Elevation field.",
-        "Live View now supports a legacy-style offline map swap: a small bottom-left map inset can be tapped to expand full-screen, while the live video becomes the preview inset so you can swap back instantly.",
-        "Settings now include an Offline Maps page for importing local .map regions, picking the active region, and opening the official mapsforge download source, with visible OpenStreetMap contributor attribution."
+        "`FF Native` is now the default non-debug live-view path, so the normal XIRO Lite camera launch uses the smoothest lowest-latency native FFmpeg route we have so far.",
+        "The older classic `Flight Feed` path has moved behind Debug Mode, keeping it available for comparison without making the normal camera flow depend on the less stable experimental decoder path.",
+        "Turning Debug Mode off now also normalizes any saved debug-only player-path selection back to `FF Native`, preventing hidden experimental modes from leaking into the regular app experience."
     ),
     knownIssues = listOf(
-        "FOV in the legacy app appears to be a camera-side field-of-view or digital zoom callback, not core flight telemetry, so XIRO Lite is leaving it pending until the camera-side query is mapped.",
-        "Xplorer 4K still needs real hardware validation to confirm whether its live-view timing matches the regular Xplorer and Gimbal flow.",
-        "Xplorer 4K time sync is still intentionally excluded until its Ambarella-side transport is captured cleanly.",
-        "Freshly reset range extenders still need real hardware verification to confirm the full bind flow matches the legacy app across firmware variants.",
-        "Extender rename and extender password changes still rely on the best-effort HTTP transport because the exact legacy rename transport split has not been fully proven on-wire yet.",
-        "Current bound camera SSID may still remain unavailable on some relay firmware revisions until every current-air response variant is decoded.",
-        "Remote camera-SD delete is still intentionally excluded until the true legacy transport is proven.",
-        "Remote video thumbnail and screennail transport is still not fully decoded, so remote camera videos remain download-first instead of preview-first.",
-        "Remote media info is still best-effort and may show Unknown when the camera does not return reliable file headers or stream metadata.",
-        "Remote battery percentage is newly decoded from a calibrated legacy callback table and should be treated as experimental until more low-end remote battery captures are validated.",
-        "Live View camera mode is still inferred locally; the legacy current-mode callback exists, but its on-wire transport has not been decoded yet.",
-        "The current flight-mode HUD label follows the field-observed satellite threshold of 0-6 sats = Attitude and 7+ sats = GPS Mode, but deeper control-state decoding is still in progress.",
-        "HJ logging now auto-starts in live view, but broader whole-app session logging outside the viewer may still need a dedicated recorder lifecycle later.",
-        "UAV-time sync transport is still intentionally excluded until the separate legacy flight-control path is proven on-wire.",
-        "Deeper legacy warnings like return-home and optical-flow fault are still intentionally excluded until their raw fields are validated.",
-        "The new active-session RTSP GET_PARAMETER keepalive matches the legacy capture pattern, but it still needs real flight validation against weak-link video dropouts.",
-        "Legacy UDP live view still is not field-stable yet; the new transport timeout and fallback work should shorten black-screen startups, but more capture comparison is still needed before UDP can be treated as solved."
-    )
+        "Both `GStreamer` and `FF Native` are still debug-only experimental paths, and device-specific latency/smoothness tuning is still in progress.",
+        "Most live camera settings beyond Preview Resolution, Image Resolution, and Anti-blink are still intentionally pending until their legacy command mappings are captured safely."
+    ),
+    fullChangelogUrl = FULL_CHANGELOG_URL
 )
 
 private fun currentAboutInfo(): AboutInfo {
@@ -452,6 +352,9 @@ private fun currentAboutInfo(): AboutInfo {
         issueTrackerUrl = "https://github.com/LarryBoyG/xplorer-android-app/issues",
         mapAttribution = OfflineMapManager.MAP_ATTRIBUTION,
         mapEngineAttribution = OfflineMapManager.MAP_ENGINE_ATTRIBUTION,
+        mediaRuntimeAttribution = "Bundled media runtimes: GStreamer 1.26.9 Android universal runtime from the GStreamer project (gstreamer.freedesktop.org), plus FFmpeg 7.1.1 Android shared libraries built locally from ffmpeg.org source releases.",
+        mediaRuntimeLicenseSummary = "The bundled GStreamer and FFmpeg runtimes are distributed under LGPL-2.1-or-later terms, separate from XIRO Lite's Apache-2.0 project code.",
+        mediaRuntimeNotice = "The app now carries the official GStreamer Android helper/runtime pieces and a locally built FFmpeg Android runtime for the experimental native player paths. Local copies of the LGPL notices are bundled under app assets for release tracking.",
         licenseSummary = "This app and its original project code are licensed under the Apache License 2.0.",
         proprietaryNotice = "This project does not claim ownership of proprietary third-party software, firmware, trademarks, logos, or copyrighted assets.",
         communityThanks = "Thanks to the community of legacy XIRO owners, testers, reverse engineers, and open source contributors helping document and preserve platform functionality."
@@ -667,12 +570,34 @@ private fun XiroLiteBetaApp() {
     var selectedBindNetwork by remember { mutableStateOf<String?>(null) }
     var pendingBindNetwork by remember { mutableStateOf<RelayWifiCandidate?>(null) }
     var relayBindInProgress by remember { mutableStateOf(false) }
+    var relayBindScanInProgress by remember { mutableStateOf(false) }
     val releaseNotes = remember { currentReleaseNotes() }
     val releasePrefs = remember { context.getSharedPreferences("xiro_lite_release_notes", android.content.Context.MODE_PRIVATE) }
     val uiPrefs = remember { context.getSharedPreferences(UI_PREFS_NAME, android.content.Context.MODE_PRIVATE) }
     var debugModeEnabled by remember { mutableStateOf(uiPrefs.getBoolean("debug_mode_enabled", false)) }
+    var relayBoundCameraHint by remember {
+        mutableStateOf(uiPrefs.getString(RELAY_BOUND_CAMERA_HINT_PREF_KEY, "").orEmpty())
+    }
+    var relayBoundCameraHintAtMs by remember {
+        mutableLongStateOf(uiPrefs.getLong(RELAY_BOUND_CAMERA_HINT_AT_MS_PREF_KEY, 0L))
+    }
+    var relayBindReconnectUntilMs by remember { mutableLongStateOf(0L) }
     var measurementUnit by remember {
         mutableStateOf(MeasurementUnit.fromStored(uiPrefs.getString(MEASUREMENT_UNIT_PREF_KEY, null)))
+    }
+    var liveVideoPipelineMode by remember {
+        mutableStateOf(
+            LiveVideoPipelineMode.fromStored(
+                uiPrefs.getString(LIVE_VIDEO_PIPELINE_PREF_KEY, null)
+            )
+        )
+    }
+    var flightFeedDecoderStrategy by remember {
+        mutableStateOf(
+            FlightFeedDecoderStrategy.fromStored(
+                uiPrefs.getString(FLIGHT_FEED_DECODER_STRATEGY_PREF_KEY, null)
+            )
+        )
     }
     var selectedLiveHudItems by remember {
         mutableStateOf(
@@ -690,6 +615,7 @@ private fun XiroLiteBetaApp() {
             releasePrefs.getString("last_ack_version", null) != releaseNotes.version
         )
     }
+
     var showStoragePermissionDialog by remember { mutableStateOf(false) }
     var storagePromptHandledForSession by remember { mutableStateOf(false) }
     var storageSetupComplete by remember { mutableStateOf(false) }
@@ -738,6 +664,43 @@ private fun XiroLiteBetaApp() {
         measurementUnit = measurementUnit,
         nowMs = telemetryNowMs
     )
+    val actualRelayStatus = cleanRelayField(betaUiState.relayState.status)
+    val actualCurrentBoundCamera = cleanRelayField(betaUiState.relayState.currentAirWifi)
+    val relayBoundHintFresh =
+        relayBoundCameraHint.isNotBlank() &&
+            relayBoundCameraHintAtMs > 0L &&
+            relayBoundCameraHintAtMs + RELAY_BIND_RECONNECT_GRACE_MS >= telemetryNowMs
+    val relayReconnectPending =
+        relayBoundHintFresh &&
+            relayBindReconnectUntilMs >= telemetryNowMs &&
+            relayDisplayNeedsFallback(actualRelayStatus)
+    fun persistRelayBoundCameraHint(ssid: String) {
+        val normalized = ssid.trim()
+        if (normalized.isBlank() || relayDisplayNeedsFallback(normalized)) return
+        val now = System.currentTimeMillis()
+        relayBoundCameraHint = normalized
+        relayBoundCameraHintAtMs = now
+        uiPrefs.edit()
+            .putString(RELAY_BOUND_CAMERA_HINT_PREF_KEY, normalized)
+            .putLong(RELAY_BOUND_CAMERA_HINT_AT_MS_PREF_KEY, now)
+            .apply()
+    }
+    val effectiveRelayStatus = when {
+        relayReconnectPending -> "Reconnecting after bind"
+        else -> actualRelayStatus
+    }
+    val effectiveCurrentBoundCamera = when {
+        !relayDisplayNeedsFallback(actualCurrentBoundCamera) -> actualCurrentBoundCamera
+        relayBoundCameraHint.isNotBlank() -> relayBoundCameraHint
+        else -> actualCurrentBoundCamera
+    }
+
+    LaunchedEffect(extenderSettingsEnabled, actualCurrentBoundCamera) {
+        if (extenderSettingsEnabled && !relayDisplayNeedsFallback(actualCurrentBoundCamera)) {
+            persistRelayBoundCameraHint(actualCurrentBoundCamera)
+            relayBindReconnectUntilMs = 0L
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -780,15 +743,33 @@ private fun XiroLiteBetaApp() {
         if (liveLogs.size > 300) liveLogs.removeAt(0)
     }
 
+    suspend fun refreshBindMenu(forceRescan: Boolean = true, logMessage: String? = null) {
+        relayBindScanInProgress = true
+        try {
+            relayProbeResults = relayProbe.probeBindMenu(relayHost, forceRescan = forceRescan)
+            logMessage?.let(::appendLog)
+        } finally {
+            relayBindScanInProgress = false
+        }
+    }
+
     fun launchDedicatedCameraViewer(
         initialStreamProfile: StreamProfile? = null,
         autoDebugCapture: Boolean = false,
         launchLabel: String = "Standard"
     ) {
         val requestedProfile = initialStreamProfile ?: StreamProfile.AUTO
+        val effectivePipelineMode =
+            if (debugModeEnabled) liveVideoPipelineMode else LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE
         appendLog(
             "Launching dedicated camera viewer [$launchLabel] " +
-                "with ${requestedProfile.label} (${requestedProfile.transportLabel})"
+                "with ${requestedProfile.label} (${requestedProfile.transportLabel}) " +
+                "via ${effectivePipelineMode.title}" +
+                if (effectivePipelineMode.usesFlightFeedDecoderStrategy) {
+                    " using ${flightFeedDecoderStrategy.title}"
+                } else {
+                    ""
+                }
         )
         scope.launch {
             appendLog("Running camera init before playback")
@@ -799,11 +780,34 @@ private fun XiroLiteBetaApp() {
             putExtra(CameraViewerActivity.EXTRA_PROFILE_ID, selectedProfile.id)
             putExtra(CameraViewerActivity.EXTRA_INITIAL_STREAM_PROFILE, requestedProfile.name)
             putExtra(CameraViewerActivity.EXTRA_AUTO_DEBUG_CAPTURE, autoDebugCapture)
+            putExtra(CameraViewerActivity.EXTRA_VIDEO_PIPELINE_MODE, effectivePipelineMode.name)
+            putExtra(
+                CameraViewerActivity.EXTRA_FLIGHT_FEED_DECODER_STRATEGY,
+                flightFeedDecoderStrategy.name
+            )
             putStringArrayListExtra(
                 CameraViewerActivity.EXTRA_HUD_ITEMS,
                 ArrayList(selectedLiveHudItems)
             )
         })
+    }
+
+    fun setLiveVideoPipelineMode(mode: LiveVideoPipelineMode) {
+        val effectiveMode =
+            if (!debugModeEnabled && mode.debugOnly) {
+                LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE
+            } else {
+                mode
+            }
+        liveVideoPipelineMode = effectiveMode
+        uiPrefs.edit().putString(LIVE_VIDEO_PIPELINE_PREF_KEY, effectiveMode.storedValue).apply()
+        appendLog("Live video pipeline set to ${effectiveMode.title}")
+    }
+
+    fun setFlightFeedDecoderStrategy(strategy: FlightFeedDecoderStrategy) {
+        flightFeedDecoderStrategy = strategy
+        uiPrefs.edit().putString(FLIGHT_FEED_DECODER_STRATEGY_PREF_KEY, strategy.storedValue).apply()
+        appendLog("Flight Feed decoder strategy set to ${strategy.title}")
     }
 
     fun requestSharedStorageAccess() {
@@ -952,6 +956,16 @@ private fun XiroLiteBetaApp() {
         if (!enabled && settingsPage == SettingsPage.DEBUG) {
             settingsPage = SettingsPage.ROOT
         }
+        if (!enabled && liveVideoPipelineMode.debugOnly) {
+            liveVideoPipelineMode = LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE
+            uiPrefs.edit()
+                .putString(
+                    LIVE_VIDEO_PIPELINE_PREF_KEY,
+                    LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE.storedValue
+                )
+                .apply()
+            appendLog("Live video pipeline reset to ${LiveVideoPipelineMode.LEGACY_FLIGHT_SOFTWARE.title}")
+        }
         appendLog("Debug mode ${if (enabled) "enabled" else "disabled"}")
     }
 
@@ -1037,8 +1051,10 @@ private fun XiroLiteBetaApp() {
                     relayProbeResults = relayProbe.probeSettingsRoot(relayHost)
                 }
                 SettingsPage.BIND_CAMERA -> {
-                    appendLog("Bind extender screen opened: auto requesting repeater Wi-Fi list")
-                    relayProbeResults = relayProbe.probeBindMenu(relayHost, forceRescan = true)
+                    refreshBindMenu(
+                        forceRescan = true,
+                        logMessage = "Bind extender screen opened: auto requesting repeater Wi-Fi list"
+                    )
                 }
                 else -> Unit
             }
@@ -1072,6 +1088,7 @@ private fun XiroLiteBetaApp() {
         if (settingsPage != SettingsPage.BIND_CAMERA) {
             pendingBindNetwork = null
             relayBindInProgress = false
+            relayBindScanInProgress = false
         }
     }
 
@@ -1407,8 +1424,20 @@ private fun XiroLiteBetaApp() {
                         channelBond = network.channelBond ?: "",
                         sideBand = network.sideBand ?: ""
                     )
-                    relayProbeResults = listOf(result) + relayProbe.probeBindMenu(relayHost, forceRescan = true)
-                    appendLog("Bind extender to camera attempted: ${network.ssid}")
+                    if (relayBindLikelyAccepted(result)) {
+                        persistRelayBoundCameraHint(network.ssid)
+                        relayBindReconnectUntilMs = System.currentTimeMillis() + RELAY_BIND_RECONNECT_GRACE_MS
+                        relayProbe.closeSession()
+                        appendLog("Bind extender to camera accepted: ${network.ssid}. Waiting for extender reconnect.")
+                    } else {
+                        relayBindScanInProgress = true
+                        try {
+                            relayProbeResults = listOf(result) + relayProbe.probeBindMenu(relayHost, forceRescan = true)
+                            appendLog("Bind extender to camera attempted: ${network.ssid}")
+                        } finally {
+                            relayBindScanInProgress = false
+                        }
+                    }
                     relayBindInProgress = false
                     pendingBindNetwork = null
                     relayBindPassword = ""
@@ -1610,6 +1639,10 @@ private fun XiroLiteBetaApp() {
                                         connectionStatus = connectionStatus,
                                         detectedDroneLabel = cameraHomeDroneLabel(selectedProfile),
                                         onOpenCamera = { launchDedicatedCameraViewer(launchLabel = "Standard") },
+                                        selectedPipelineMode = liveVideoPipelineMode,
+                                        onSelectPipelineMode = ::setLiveVideoPipelineMode,
+                                        selectedDecoderStrategy = flightFeedDecoderStrategy,
+                                        onSelectDecoderStrategy = ::setFlightFeedDecoderStrategy,
                                         debugModeEnabled = debugModeEnabled,
                                         onOpenUdpFirstCamera = if (debugModeEnabled) {
                                             {
@@ -1728,8 +1761,8 @@ private fun XiroLiteBetaApp() {
                                             enabled = extenderSettingsEnabled,
                                             extenderName = if (extenderSettingsEnabled) extenderName else "",
                                             extenderPassword = if (extenderSettingsEnabled) "Hidden" else "",
-                                            currentBoundCamera = if (extenderSettingsEnabled) cleanRelayField(betaUiState.relayState.currentAirWifi) else "Not connected to XIRO extender",
-                                            relayStatus = if (extenderSettingsEnabled) betaUiState.relayState.status else "Unavailable",
+                                            currentBoundCamera = if (extenderSettingsEnabled) effectiveCurrentBoundCamera else "Not connected to XIRO extender",
+                                            relayStatus = if (extenderSettingsEnabled) effectiveRelayStatus else "Unavailable",
                                             onEditName = { if (extenderSettingsEnabled) settingsPage = SettingsPage.EXTENDER_NAME },
                                             onEditPassword = { if (extenderSettingsEnabled) settingsPage = SettingsPage.EXTENDER_PASSWORD },
                                             measurementUnitLabel = measurementUnit.settingsValueLabel,
@@ -1868,16 +1901,20 @@ private fun XiroLiteBetaApp() {
                                     item {
                                         BindExtenderCameraCard(
                                             enabled = extenderSettingsEnabled,
-                                            relayStatus = cleanRelayField(betaUiState.relayState.status),
-                                            currentBoundCamera = cleanRelayField(betaUiState.relayState.currentAirWifi),
+                                            relayStatus = effectiveRelayStatus,
+                                            currentBoundCamera = effectiveCurrentBoundCamera,
                                             networks = betaUiState.relayState.availableNetworks,
                                             selectedSsid = selectedBindNetwork,
+                                            bindingInProgress = relayBindInProgress,
+                                            searchingInProgress = relayBindScanInProgress,
                                             onBack = { settingsPage = SettingsPage.ROOT },
                                             onRefresh = {
                                                 if (extenderSettingsEnabled) {
                                                     scope.launch {
-                                                        relayProbeResults = relayProbe.probeBindMenu(relayHost, forceRescan = true)
-                                                        appendLog("Bind extender screen refreshed manually")
+                                                        refreshBindMenu(
+                                                            forceRescan = true,
+                                                            logMessage = "Bind extender screen refreshed manually"
+                                                        )
                                                     }
                                                 }
                                             },
@@ -1902,8 +1939,20 @@ private fun XiroLiteBetaApp() {
                                                             channelBond = network.channelBond ?: "",
                                                             sideBand = network.sideBand ?: ""
                                                         )
-                                                        relayProbeResults = listOf(result) + relayProbe.probeBindMenu(relayHost, forceRescan = true)
-                                                        appendLog("Bind extender to camera attempted with legacy default password: ${network.ssid}")
+                                                        if (relayBindLikelyAccepted(result)) {
+                                                            persistRelayBoundCameraHint(network.ssid)
+                                                            relayBindReconnectUntilMs = System.currentTimeMillis() + RELAY_BIND_RECONNECT_GRACE_MS
+                                                            relayProbe.closeSession()
+                                                            appendLog("Bind extender to camera accepted with legacy default password: ${network.ssid}. Waiting for extender reconnect.")
+                                                        } else {
+                                                            relayBindScanInProgress = true
+                                                            try {
+                                                                relayProbeResults = listOf(result) + relayProbe.probeBindMenu(relayHost, forceRescan = true)
+                                                                appendLog("Bind extender to camera attempted with legacy default password: ${network.ssid}")
+                                                            } finally {
+                                                                relayBindScanInProgress = false
+                                                            }
+                                                        }
                                                         relayBindInProgress = false
                                                         pendingBindNetwork = null
                                                         relayBindPassword = ""
@@ -2052,6 +2101,27 @@ private fun cleanRelayField(raw: String): String {
     if (trimmed.contains("exception", ignoreCase = true)) return "Unavailable"
     if (trimmed.contains("SOCKET OK", ignoreCase = true)) return "Waiting for repeater response"
     return trimmed
+}
+
+private fun relayDisplayNeedsFallback(value: String): Boolean {
+    val trimmed = value.trim()
+    return trimmed.isBlank() ||
+        trimmed == "--" ||
+        trimmed == "Unknown" ||
+        trimmed == "Unavailable" ||
+        trimmed.startsWith("Waiting", ignoreCase = true)
+}
+
+private fun relayBindLikelyAccepted(result: CommandResult): Boolean {
+    val combined = "${result.status}\n${result.preview}".trim()
+    if (combined.isBlank()) return false
+    if (result.status.startsWith("SOCKET OK", ignoreCase = true)) return true
+    if (result.status.contains("HTTP 200", ignoreCase = true)) return true
+    if (combined.contains("failed to connect", ignoreCase = true)) return false
+    if (combined.contains("connection refused", ignoreCase = true)) return false
+    if (combined.contains("exception", ignoreCase = true)) return false
+    if (combined.contains("timeout", ignoreCase = true)) return false
+    return combined.contains("ok", ignoreCase = true) || combined.contains("success", ignoreCase = true)
 }
 
 
@@ -2659,6 +2729,10 @@ private fun CameraHomeCard(
     connectionStatus: String,
     detectedDroneLabel: String,
     onOpenCamera: () -> Unit,
+    selectedPipelineMode: LiveVideoPipelineMode,
+    onSelectPipelineMode: (LiveVideoPipelineMode) -> Unit,
+    selectedDecoderStrategy: FlightFeedDecoderStrategy,
+    onSelectDecoderStrategy: (FlightFeedDecoderStrategy) -> Unit,
     debugModeEnabled: Boolean,
     onOpenUdpFirstCamera: (() -> Unit)? = null,
     onOpenTcpFirstCamera: (() -> Unit)? = null
@@ -2692,10 +2766,12 @@ private fun CameraHomeCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(heroPanelHeight)
+                .heightIn(min = heroPanelHeight)
         ) {
             Column(
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(vertical = 20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(labelSpacing)
             ) {
@@ -2728,6 +2804,82 @@ private fun CameraHomeCard(
                     color = XiroDesignTokens.TextSecondary,
                     style = MaterialTheme.typography.titleSmall
                 )
+                if (debugModeEnabled) {
+                    Column(
+                        modifier = Modifier.widthIn(max = 430.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Player Path",
+                            color = XiroDesignTokens.TextMuted,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            maxItemsInEachRow = 3
+                        ) {
+                            LiveVideoPipelineMode.entries
+                                .filter { mode -> debugModeEnabled || !mode.debugOnly }
+                                .forEach { mode ->
+                                XiroToggleChip(
+                                    selected = selectedPipelineMode == mode,
+                                    onClick = { onSelectPipelineMode(mode) }
+                                ) {
+                                    Text(
+                                        text = mode.shortLabel,
+                                        color = if (selectedPipelineMode == mode) {
+                                            XiroDesignTokens.BackgroundBottom
+                                        } else {
+                                            XiroDesignTokens.TextPrimary
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = selectedPipelineMode.summary,
+                            color = XiroDesignTokens.TextMuted,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (selectedPipelineMode.usesFlightFeedDecoderStrategy) {
+                            Text(
+                                text = "Flight Feed Decoder",
+                                color = XiroDesignTokens.TextMuted,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                maxItemsInEachRow = 2
+                            ) {
+                                FlightFeedDecoderStrategy.entries.forEach { strategy ->
+                                    XiroToggleChip(
+                                        selected = selectedDecoderStrategy == strategy,
+                                        onClick = { onSelectDecoderStrategy(strategy) }
+                                    ) {
+                                        Text(
+                                            text = strategy.shortLabel,
+                                            color = if (selectedDecoderStrategy == strategy) {
+                                                XiroDesignTokens.BackgroundBottom
+                                            } else {
+                                                XiroDesignTokens.TextPrimary
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = selectedDecoderStrategy.summary,
+                                color = XiroDesignTokens.TextMuted,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
                 if (debugModeEnabled && onOpenUdpFirstCamera != null && onOpenTcpFirstCamera != null) {
                     Column(
                         modifier = Modifier.widthIn(max = 430.dp),
@@ -2735,7 +2887,7 @@ private fun CameraHomeCard(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Debug live-view launchers start a rooted 60s combo log in XIRO/live_view_logs.",
+                            text = "Debug live-view launchers start a rooted combo log in XIRO/live_view_logs for the full Live View session.",
                             color = XiroDesignTokens.TextMuted,
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -3626,6 +3778,7 @@ private fun ReleaseNotesDialog(
     notes: ReleaseNotes,
     onDismiss: () -> Unit
 ) {
+    val uriHandler = LocalUriHandler.current
     Dialog(onDismissRequest = onDismiss) {
         XiroDialogPanel {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -3652,6 +3805,14 @@ private fun ReleaseNotesDialog(
                             Text("- $issue", style = MaterialTheme.typography.bodySmall, color = XiroDesignTokens.TextSecondary)
                         }
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Full Changelog", style = MaterialTheme.typography.titleSmall, color = XiroDesignTokens.AccentBright)
+                    Text(
+                        text = notes.fullChangelogUrl,
+                        modifier = Modifier.clickable { uriHandler.openUri(notes.fullChangelogUrl) },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = XiroDesignTokens.AccentBright
+                    )
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3704,12 +3865,17 @@ private fun DisclaimerDialog(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    XiroSecondaryButton(onClick = onExit) { Text("Exit App") }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    XiroPrimaryButton(onClick = onAgree) { Text("Agree and Continue") }
+                    XiroSecondaryButton(
+                        onClick = onExit,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Exit App") }
+                    XiroPrimaryButton(
+                        onClick = onAgree,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Agree and Continue") }
                 }
             }
         }
@@ -3770,12 +3936,17 @@ private fun StoragePermissionDialog(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    XiroSecondaryButton(onClick = onContinuePrivate) { Text("Use App Storage") }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    XiroPrimaryButton(onClick = onGrant) { Text(grantLabel) }
+                    XiroSecondaryButton(
+                        onClick = onContinuePrivate,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Use App Storage") }
+                    XiroPrimaryButton(
+                        onClick = onGrant,
+                        modifier = Modifier.weight(1f)
+                    ) { Text(grantLabel) }
                 }
             }
         }
@@ -3784,6 +3955,7 @@ private fun StoragePermissionDialog(
 
 @Composable
 private fun ReleaseNotesPageCard(notes: ReleaseNotes) {
+    val uriHandler = LocalUriHandler.current
     XiroAppCard {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -3821,6 +3993,18 @@ private fun ReleaseNotesPageCard(notes: ReleaseNotes) {
                     )
                 }
             }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Full Changelog",
+                style = MaterialTheme.typography.titleMedium,
+                color = XiroDesignTokens.AccentBright
+            )
+            Text(
+                text = notes.fullChangelogUrl,
+                modifier = Modifier.clickable { uriHandler.openUri(notes.fullChangelogUrl) },
+                style = MaterialTheme.typography.bodyMedium,
+                color = XiroDesignTokens.AccentBright
+            )
         }
     }
 }
@@ -3875,6 +4059,32 @@ private fun AboutAppCard() {
                 about.mapEngineAttribution,
                 color = XiroDesignTokens.TextSecondary
             )
+            if (
+                about.mediaRuntimeAttribution != null ||
+                about.mediaRuntimeLicenseSummary != null ||
+                about.mediaRuntimeNotice != null
+            ) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Media Runtime", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
+                about.mediaRuntimeAttribution?.let {
+                    Text(
+                        it,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                }
+                about.mediaRuntimeLicenseSummary?.let {
+                    Text(
+                        it,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                }
+                about.mediaRuntimeNotice?.let {
+                    Text(
+                        it,
+                        color = XiroDesignTokens.TextSecondary
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(4.dp))
             Text("License", style = MaterialTheme.typography.titleMedium, color = XiroDesignTokens.AccentBright)
             Text(
@@ -3919,12 +4129,17 @@ private fun DebugModeWarningDialog(
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    XiroSecondaryButton(onClick = onDismiss) { Text("Cancel") }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    XiroPrimaryButton(onClick = onConfirm) { Text("OK") }
+                    XiroSecondaryButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Cancel") }
+                    XiroPrimaryButton(
+                        onClick = onConfirm,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("OK") }
                 }
             }
         }
@@ -4051,6 +4266,8 @@ private fun BindExtenderCameraCard(
     currentBoundCamera: String,
     networks: List<RelayWifiCandidate>,
     selectedSsid: String?,
+    bindingInProgress: Boolean,
+    searchingInProgress: Boolean,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onSelect: (RelayWifiCandidate) -> Unit
@@ -4068,22 +4285,56 @@ private fun BindExtenderCameraCard(
             Text("Repeater status: ${relayStatus.ifBlank { "Unknown" }}", color = XiroDesignTokens.TextSecondary)
             Text("Current bound network: ${currentBoundCamera.ifBlank { "Unknown" }}", color = XiroDesignTokens.TextSecondary)
             Text("Tap a candidate to enter its password and start the bind flow.", color = XiroDesignTokens.TextMuted)
+            if (searchingInProgress) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = XiroDesignTokens.AccentBright
+                    )
+                    Text("Searching for available access points...", color = XiroDesignTokens.TextSecondary)
+                }
+            }
             if (!enabled) {
                 Text("Connect to the XIRO range extender to load the Wi-Fi list.", color = XiroDesignTokens.TextMuted)
-            } else if (validNetworks.isEmpty()) {
+            } else if (validNetworks.isEmpty() && !searchingInProgress) {
                 Text("No networks returned", color = XiroDesignTokens.TextSecondary)
-                XiroSecondaryButton(onClick = onRefresh) { Text("Retry") }
+                XiroSecondaryButton(onClick = onRefresh, enabled = !bindingInProgress) { Text("Retry") }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                       validNetworks.forEach { network ->
                           XiroSecondaryButton(
                               onClick = { onSelect(network) },
-                              modifier = Modifier.fillMaxWidth()
+                              modifier = Modifier.fillMaxWidth(),
+                              enabled = !bindingInProgress && !searchingInProgress
                           ) {
                               Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                  Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                  Row(
+                                      Modifier.fillMaxWidth(),
+                                      horizontalArrangement = Arrangement.SpaceBetween,
+                                      verticalAlignment = Alignment.CenterVertically
+                                  ) {
                                       Text(network.ssid)
-                                      if (selectedSsid == network.ssid) Text("Selected")
+                                      if (selectedSsid == network.ssid) {
+                                          if (bindingInProgress) {
+                                              Row(
+                                                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                  verticalAlignment = Alignment.CenterVertically
+                                              ) {
+                                                  CircularProgressIndicator(
+                                                      modifier = Modifier.size(14.dp),
+                                                      strokeWidth = 2.dp,
+                                                      color = XiroDesignTokens.AccentBright
+                                                  )
+                                                  Text("Binding...")
+                                              }
+                                          } else {
+                                              Text("Selected")
+                                          }
+                                      }
                                   }
                                   val detail = buildList {
                                       network.channel?.takeIf { it.isNotBlank() }?.let { add("ch $it") }
@@ -4099,8 +4350,26 @@ private fun BindExtenderCameraCard(
                               }
                           }
                       }
-                      XiroSecondaryButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) {
-                          Text("Search again")
+                      XiroSecondaryButton(
+                          onClick = onRefresh,
+                          modifier = Modifier.fillMaxWidth(),
+                          enabled = !bindingInProgress && !searchingInProgress
+                      ) {
+                          if (searchingInProgress) {
+                              Row(
+                                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                  verticalAlignment = Alignment.CenterVertically
+                              ) {
+                                  CircularProgressIndicator(
+                                      modifier = Modifier.size(16.dp),
+                                      strokeWidth = 2.dp,
+                                      color = XiroDesignTokens.AccentBright
+                                  )
+                                  Text("Searching...")
+                              }
+                          } else {
+                              Text("Search again")
+                          }
                       }
                   }
               }
@@ -4175,6 +4444,7 @@ private fun isSelectableBindSsid(raw: String): Boolean {
     if (trimmed.isBlank()) return false
     if (trimmed == "<empty body>") return false
     if (trimmed.startsWith("<") || trimmed.startsWith("{") || trimmed.startsWith("[")) return false
+    if (trimmed.startsWith("failed to connect", ignoreCase = true)) return false
     if (trimmed.contains("connection refused", ignoreCase = true)) return false
     if (trimmed.contains("exception", ignoreCase = true)) return false
     if (trimmed.contains("timeout", ignoreCase = true)) return false

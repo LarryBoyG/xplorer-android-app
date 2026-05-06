@@ -16,7 +16,8 @@ object RelayPayloadParser {
         val repeaterStatus: String? = null,
         val lastError: String? = null,
         val boundSsid: String? = null,
-        val statusCode: String? = null
+        val statusCode: String? = null,
+        val signal: String? = null
     )
 
     fun extractLikelyBoundSsid(text: String): String? {
@@ -105,6 +106,7 @@ object RelayPayloadParser {
         parseJsonObject(extractJsonPayload(text))?.let { root ->
             val tag = root.optStringOrNullIgnoreCase("tag")
             val statusCode = root.optFlexibleStringIgnoreCase("status")
+            val signal = root.optFlexibleStringIgnoreCase("signal")
             val boundSsid = root.optStringOrNullIgnoreCase("ssid")
             val repeaterStatus = when {
                 root.optFlexibleStringIgnoreCase("repeater_status") != null -> root.optFlexibleStringIgnoreCase("repeater_status")
@@ -112,12 +114,13 @@ object RelayPayloadParser {
                 else -> null
             }
             val lastError = root.optFlexibleStringIgnoreCase("last_error")
-            if (repeaterStatus != null || lastError != null || boundSsid != null || statusCode != null) {
+            if (repeaterStatus != null || lastError != null || boundSsid != null || statusCode != null || signal != null) {
                 return RepeaterStatusInfo(
                     repeaterStatus = repeaterStatus,
                     lastError = lastError,
                     boundSsid = boundSsid,
-                    statusCode = statusCode
+                    statusCode = statusCode,
+                    signal = signal
                 )
             }
         }
@@ -126,13 +129,15 @@ object RelayPayloadParser {
         val lastError = extractFlexibleValue(text, "last_error")
         val boundSsid = extractQuotedValue(text, "SSID") ?: extractQuotedValue(text, "ssid")
         val statusCode = extractFlexibleValue(text, "status")
-        if (repeaterStatus == null && lastError == null && boundSsid == null && statusCode == null) return null
+        val signal = extractFlexibleValue(text, "signal")
+        if (repeaterStatus == null && lastError == null && boundSsid == null && statusCode == null && signal == null) return null
 
         return RepeaterStatusInfo(
             repeaterStatus = repeaterStatus,
             lastError = lastError,
             boundSsid = boundSsid,
-            statusCode = statusCode
+            statusCode = statusCode,
+            signal = signal
         )
     }
 
@@ -325,6 +330,7 @@ object RelayPayloadParser {
         if (trimmed.isBlank()) return false
         if (trimmed == "<empty body>") return false
         if (trimmed.startsWith("<") || trimmed.startsWith("{") || trimmed.startsWith("[")) return false
+        if (trimmed.startsWith("failed to connect", ignoreCase = true)) return false
         if (trimmed.contains("connection refused", ignoreCase = true)) return false
         if (trimmed.contains("exception", ignoreCase = true)) return false
         if (trimmed.contains("timeout", ignoreCase = true)) return false
@@ -367,6 +373,7 @@ object RelayPayloadParser {
         if (normalized.length !in 2..64) return false
         if (!normalized.any(Char::isLetter)) return false
         if (normalized.equals("<empty body>", ignoreCase = true)) return false
+        if (normalized.startsWith("failed to connect", ignoreCase = true)) return false
         if (normalized.contains("socket ok", ignoreCase = true)) return false
         if (normalized.contains("exception", ignoreCase = true)) return false
         if (normalized.contains("timeout", ignoreCase = true)) return false

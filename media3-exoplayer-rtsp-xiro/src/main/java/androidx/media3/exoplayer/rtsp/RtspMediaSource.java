@@ -314,7 +314,7 @@ public final class RtspMediaSource extends BaseMediaSource {
         new SinglePeriodTimeline(
             timelineDurationUs,
             timelineIsSeekable,
-            /* isDynamic= */ false,
+            /* isDynamic= */ timelineIsLive,
             /* useLiveConfiguration= */ timelineIsLive,
             /* manifest= */ null,
             getMediaItem());

@@ -1,7 +1,9 @@
 package com.example.xirolite
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.SystemClock
 import android.view.TextureView
@@ -22,6 +24,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -32,6 +35,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
 import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.exoplayer.rtsp.RtspDebugStats
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -43,6 +47,15 @@ class RtspPlayerController {
 }
 
 private const val LEGACY_RTSP_USER_AGENT = "xiroRTSP (Rtsp Client/1.0.0)"
+private const val UNSET_LIVE_OFFSET_SNAPBACK_THRESHOLD_MS = 950L
+private const val LIVE_SNAPBACK_COOLDOWN_MS = 1_800L
+private const val LIVE_CATCHUP_CLEAR_BUFFER_MS = 90L
+private const val LIVE_CATCHUP_STEP_ONE_MS = 140L
+private const val LIVE_CATCHUP_STEP_TWO_MS = 220L
+private const val LIVE_CATCHUP_STEP_THREE_MS = 320L
+private const val LIVE_CATCHUP_STEP_FOUR_MS = 450L
+private const val LIVE_CATCHUP_STEP_FIVE_MS = 650L
+private const val LIVE_CATCHUP_STEP_SIX_MS = 850L
 
 private fun xiroH264DecoderRank(decoderInfo: MediaCodecInfo): Int =
     when {
@@ -100,6 +113,41 @@ private fun PlaybackException.describeForLog(): String {
     return "$errorCodeName - $messageText - cause=$causeText$rootText"
 }
 
+private fun playerStateLabel(playbackState: Int): String =
+    when (playbackState) {
+        Player.STATE_IDLE -> "IDLE"
+        Player.STATE_BUFFERING -> "BUFFERING"
+        Player.STATE_READY -> "READY"
+        Player.STATE_ENDED -> "ENDED"
+        else -> "UNKNOWN"
+    }
+
+private fun formatLiveOffsetForLog(currentLiveOffsetMs: Long): String =
+    if (currentLiveOffsetMs == C.TIME_UNSET) "unset" else "${currentLiveOffsetMs}ms"
+
+private fun desiredCatchupSpeed(
+    streamProfile: StreamProfile,
+    currentLiveOffsetMs: Long,
+    bufferedAheadMs: Long,
+    currentSpeed: Float
+): Float {
+    if (streamProfile.forceRtpTcp) {
+        return 1.0f
+    }
+    val latencySignalMs = if (currentLiveOffsetMs != C.TIME_UNSET) currentLiveOffsetMs else bufferedAheadMs
+    val targetSpeed = when {
+        latencySignalMs >= LIVE_CATCHUP_STEP_SIX_MS -> 1.45f
+        latencySignalMs >= LIVE_CATCHUP_STEP_FIVE_MS -> 1.34f
+        latencySignalMs >= LIVE_CATCHUP_STEP_FOUR_MS -> 1.24f
+        latencySignalMs >= LIVE_CATCHUP_STEP_THREE_MS -> 1.16f
+        latencySignalMs >= LIVE_CATCHUP_STEP_TWO_MS -> 1.10f
+        latencySignalMs >= LIVE_CATCHUP_STEP_ONE_MS -> 1.05f
+        latencySignalMs <= LIVE_CATCHUP_CLEAR_BUFFER_MS -> 1.0f
+        else -> currentSpeed
+    }
+    return targetSpeed.coerceIn(streamProfile.minPlaybackSpeed, streamProfile.maxPlaybackSpeed)
+}
+
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun RtspPlayer(
@@ -146,6 +194,15 @@ fun RtspPlayer(
     var firstFrameDelivered by remember(url, reloadToken, streamProfile, debugRtspMessages, watchdogReloadToken) {
         mutableStateOf(false)
     }
+    var lastLiveSnapbackAtMs by remember(url, reloadToken, streamProfile, debugRtspMessages, watchdogReloadToken) {
+        mutableLongStateOf(0L)
+    }
+    var snapbackTriggerCount by remember(url, reloadToken, streamProfile, debugRtspMessages, watchdogReloadToken) {
+        mutableIntStateOf(0)
+    }
+    var appliedPlaybackSpeed by remember(url, reloadToken, streamProfile, debugRtspMessages, watchdogReloadToken) {
+        mutableStateOf(1.0f)
+    }
 
     fun requestAutomaticRecovery(reason: String) {
         val now = SystemClock.elapsedRealtime()
@@ -159,12 +216,13 @@ fun RtspPlayer(
 
     val exoPlayer = remember(url, reloadToken, streamProfile, debugRtspMessages, watchdogReloadToken) {
         val bufferTuple = when (streamProfile) {
-            StreamProfile.QUALITY -> intArrayOf(500, 1500, 250, 300)
-            StreamProfile.AUTO -> intArrayOf(500, 1500, 250, 300)
-            StreamProfile.STABILITY -> intArrayOf(1200, 3500, 500, 800)
+            StreamProfile.QUALITY -> intArrayOf(25, 110, 5, 10)
+            StreamProfile.AUTO -> intArrayOf(25, 110, 5, 10)
+            StreamProfile.STABILITY -> intArrayOf(800, 2200, 300, 500)
         }
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(bufferTuple[0], bufferTuple[1], bufferTuple[2], bufferTuple[3])
+            .setPrioritizeTimeOverSizeThresholds(true)
             .setBackBuffer(0, false)
             .build()
         val renderersFactory = DefaultRenderersFactory(context)
@@ -205,13 +263,7 @@ fun RtspPlayer(
 
                     Player.STATE_IDLE -> Unit
                 }
-                val state = when (playbackState) {
-                    Player.STATE_IDLE -> "IDLE"
-                    Player.STATE_BUFFERING -> "BUFFERING"
-                    Player.STATE_READY -> "READY"
-                    Player.STATE_ENDED -> "ENDED"
-                    else -> "UNKNOWN"
-                }
+                val state = playerStateLabel(playbackState)
                 onLog("Player state: $state")
             }
 
@@ -260,7 +312,103 @@ fun RtspPlayer(
             if (autoRecoveryRequested) continue
 
             val now = SystemClock.elapsedRealtime()
-            if (!hadLivePlayback) {
+            val bufferedAheadMs = maxOf(0L, exoPlayer.bufferedPosition - exoPlayer.currentPosition)
+            val currentLiveOffsetMs = exoPlayer.currentLiveOffset
+            val snapshot = RtspDebugStats.snapshot()
+            if (playerState == Player.STATE_READY) {
+                val desiredPlaybackSpeed =
+                    desiredCatchupSpeed(
+                        streamProfile = streamProfile,
+                        currentLiveOffsetMs = currentLiveOffsetMs,
+                        bufferedAheadMs = bufferedAheadMs,
+                        currentSpeed = appliedPlaybackSpeed
+                    )
+                if (desiredPlaybackSpeed != appliedPlaybackSpeed) {
+                    appliedPlaybackSpeed = desiredPlaybackSpeed
+                    exoPlayer.setPlaybackParameters(PlaybackParameters(desiredPlaybackSpeed))
+                    if (debugRtspMessages) {
+                        onLog(
+                            "Live catch-up speed -> ${"%.2f".format(desiredPlaybackSpeed)}x " +
+                                "(liveOffset=${formatLiveOffsetForLog(currentLiveOffsetMs)}, " +
+                            "bufferAhead=${bufferedAheadMs}ms)"
+                        )
+                    }
+                }
+                val liveSnapbackOffsetMs = streamProfile.liveSnapbackOffsetMs
+                val effectiveSnapbackOffsetMs = when {
+                    liveSnapbackOffsetMs == null -> null
+                    currentLiveOffsetMs == C.TIME_UNSET ->
+                        maxOf(liveSnapbackOffsetMs, UNSET_LIVE_OFFSET_SNAPBACK_THRESHOLD_MS)
+                    else -> liveSnapbackOffsetMs
+                }
+                if (
+                    effectiveSnapbackOffsetMs != null &&
+                    (
+                        (currentLiveOffsetMs != C.TIME_UNSET && currentLiveOffsetMs >= effectiveSnapbackOffsetMs) ||
+                            bufferedAheadMs >= effectiveSnapbackOffsetMs
+                    ) &&
+                    now - lastLiveSnapbackAtMs >= LIVE_SNAPBACK_COOLDOWN_MS
+                ) {
+                    lastLiveSnapbackAtMs = now
+                    snapbackTriggerCount += 1
+                    if (currentLiveOffsetMs == C.TIME_UNSET) {
+                        onLog(
+                            "Live latency exceeded ${effectiveSnapbackOffsetMs}ms " +
+                                "(liveOffset=${formatLiveOffsetForLog(currentLiveOffsetMs)}, " +
+                                "bufferAhead=${bufferedAheadMs}ms, renderedFrame=$hasRenderedFrame, " +
+                                "livePlayback=$hadLivePlayback); keeping the UDP session alive and " +
+                                "letting catch-up speed handle backlog because latency-triggered rebuilds " +
+                                "have been causing visible flight freezes"
+                        )
+                    } else {
+                        onLog(
+                            "Live latency exceeded ${effectiveSnapbackOffsetMs}ms " +
+                                "(liveOffset=${formatLiveOffsetForLog(currentLiveOffsetMs)}, " +
+                                "bufferAhead=${bufferedAheadMs}ms, renderedFrame=$hasRenderedFrame, " +
+                                "livePlayback=$hadLivePlayback); snapping playback back toward the live edge"
+                        )
+                        exoPlayer.seekToDefaultPosition()
+                    }
+                    continue
+                }
+                val staleForMs = if (lastFrameAtMs != 0L) now - lastFrameAtMs else 0L
+                if (lastFrameAtMs != 0L && staleForMs >= streamProfile.staleFrameRecoveryMs) {
+                    requestAutomaticRecovery("no new frames for ${staleForMs / 1000}s while player stayed READY")
+                    continue
+                }
+            } else if (
+                appliedPlaybackSpeed != 1.0f &&
+                (
+                    playerState == Player.STATE_IDLE ||
+                        playerState == Player.STATE_ENDED ||
+                        bufferedAheadMs <= LIVE_CATCHUP_CLEAR_BUFFER_MS
+                    )
+            ) {
+                appliedPlaybackSpeed = 1.0f
+                exoPlayer.setPlaybackParameters(PlaybackParameters(1.0f))
+                if (debugRtspMessages) {
+                    onLog(
+                        "Live catch-up speed -> 1.00x " +
+                            "(playerState=${playerStateLabel(playerState)}, bufferAhead=${bufferedAheadMs}ms)"
+                    )
+                }
+            }
+
+            if (debugRtspMessages) {
+                onLog(
+                    "Live metrics: state=${playerStateLabel(playerState)} " +
+                        "liveOffset=${formatLiveOffsetForLog(currentLiveOffsetMs)} " +
+                        "bufferAhead=${bufferedAheadMs}ms speed=${"%.2f".format(appliedPlaybackSpeed)} " +
+                        "snapbacks=$snapbackTriggerCount " +
+                        "rtpPackets=${snapshot.packetCount} rtpBytes=${snapshot.packetBytes} " +
+                        "rtpLastGap=${snapshot.lastGapMs}ms rtpMaxGap=${snapshot.maxGapMs}ms " +
+                        "rtpIdle=${snapshot.idleForMs}ms " +
+                        "rtpBurstGaps(100/250/500/1000ms)=" +
+                        "${snapshot.gapCount100Ms}/${snapshot.gapCount250Ms}/" +
+                        "${snapshot.gapCount500Ms}/${snapshot.gapCount1000Ms}"
+                )
+            }
+            if (!hadLivePlayback && !hasRenderedFrame) {
                 if (playerState == Player.STATE_BUFFERING && prepareStartedAtMs != 0L) {
                     val startupForMs = now - prepareStartedAtMs
                     if (startupForMs >= streamProfile.startupRecoveryMs) {
@@ -279,14 +427,6 @@ fun RtspPlayer(
                 }
             }
 
-            if (playerState == Player.STATE_READY && hasRenderedFrame) {
-                val staleForMs = now - lastFrameAtMs
-                if (staleForMs >= streamProfile.staleFrameRecoveryMs) {
-                    requestAutomaticRecovery("no new frames for ${staleForMs / 1000}s while player stayed READY")
-                    continue
-                }
-            }
-
             if (playerState == Player.STATE_BUFFERING && bufferingSinceAtMs != 0L) {
                 val bufferingForMs = now - bufferingSinceAtMs
                 if (bufferingForMs >= streamProfile.bufferingRecoveryMs) {
@@ -298,6 +438,7 @@ fun RtspPlayer(
 
     LaunchedEffect(url, reloadToken, watchdogReloadToken, debugRtspMessages, exoPlayer) {
         try {
+            RtspDebugStats.reset("${streamProfile.label}/${streamProfile.transportLabel}")
             prepareStartedAtMs = SystemClock.elapsedRealtime()
             onLog(
                 "Preparing RTSP stream: $url - profile=${streamProfile.label} " +
@@ -323,15 +464,38 @@ fun RtspPlayer(
                 rtspFactory.setForceUseRtpTcp(true)
             }
 
-            onLog("RTSP route forcing disabled for Live View; using Android default network behavior")
+            val wifiRoute = WifiRouteSelector.selectWifiNetwork(context, targetHost)
+            if (wifiRoute != null) {
+                onLog("Binding process to ${wifiRoute.summary}")
+                val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(wifiRoute.network)
+            } else {
+                onLog("RTSP route forcing disabled: no suitable XIRO Wi-Fi found; using default network")
+            }
 
-            val mediaSource = rtspFactory.createMediaSource(MediaItem.fromUri(url))
+            val liveMediaItem = MediaItem.Builder()
+                .setUri(url)
+                .setLiveConfiguration(
+                    MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(streamProfile.liveTargetOffsetMs)
+                        .setMinPlaybackSpeed(streamProfile.minPlaybackSpeed)
+                        .setMaxPlaybackSpeed(streamProfile.maxPlaybackSpeed)
+                        .build()
+                )
+                .build()
+            val mediaSource = rtspFactory.createMediaSource(liveMediaItem)
             exoPlayer.setMediaSource(mediaSource)
             exoPlayer.prepare()
             awaitCancellation()
         } catch (cancelled: CancellationException) {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.bindProcessToNetwork(null)
+            onLog("Unbinding process from network due to session cancellation")
             throw cancelled
         } catch (t: Throwable) {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.bindProcessToNetwork(null)
+            onLog("Unbinding process from network due to error: ${t.message}")
             onLog("Player setup error: ${t.message}")
         }
     }

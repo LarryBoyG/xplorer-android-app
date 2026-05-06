@@ -15,17 +15,14 @@ data class RootedLiveViewCaptureSession(
     val folder: File,
     val pcapFile: File,
     val logcatFile: File,
-    val metadataFile: File
+    val metadataFile: File,
+    val stopSignalFile: File
 )
 
 class RootedLiveViewCaptureManager(
     private val context: Context,
     private val localLibraryManager: LocalLibraryManager
 ) {
-    companion object {
-        private const val CAPTURE_DURATION_SECONDS = 60
-    }
-
     suspend fun startCapture(
         host: String,
         relayHost: String,
@@ -46,7 +43,9 @@ class RootedLiveViewCaptureManager(
             val pcapFile = File(captureFolder, "$fileBase.pcap")
             val logcatFile = File(captureFolder, "${fileBase}_logcat.txt")
             val metadataFile = File(captureFolder, "${fileBase}_meta.txt")
+            val stopSignalFile = File(captureFolder, "${fileBase}_stop.signal")
             val scriptFile = File(context.cacheDir, "${fileBase}_capture.sh")
+            stopSignalFile.delete()
 
             metadataFile.writeText(
                 buildString {
@@ -58,9 +57,10 @@ class RootedLiveViewCaptureManager(
                     appendLine("Camera Host: $host")
                     appendLine("Relay Host: $relayHost")
                     appendLine("App PID: $appPid")
-                    appendLine("Duration: $CAPTURE_DURATION_SECONDS seconds")
+                    appendLine("Duration: until Live View exits")
                     appendLine("PCAP: ${pcapFile.absolutePath}")
                     appendLine("Logcat: ${logcatFile.absolutePath}")
+                    appendLine("Stop Signal: ${stopSignalFile.absolutePath}")
                 }
             )
 
@@ -71,6 +71,7 @@ class RootedLiveViewCaptureManager(
                     pcapFile = pcapFile,
                     logcatFile = logcatFile,
                     metadataFile = metadataFile,
+                    stopSignalFile = stopSignalFile,
                     appPid = appPid
                 )
             )
@@ -96,9 +97,21 @@ class RootedLiveViewCaptureManager(
                 folder = captureFolder,
                 pcapFile = pcapFile,
                 logcatFile = logcatFile,
-                metadataFile = metadataFile
+                metadataFile = metadataFile,
+                stopSignalFile = stopSignalFile
             )
         }
+    }
+
+    fun stopCapture(session: RootedLiveViewCaptureSession): Result<Unit> = runCatching {
+        if (!session.stopSignalFile.exists()) {
+            session.stopSignalFile.writeText("stop ${System.currentTimeMillis()}\n")
+        }
+        session.metadataFile.appendText(
+            "Stop requested by XIRO Lite: " +
+                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()) +
+                "\n"
+        )
     }
 
     private fun buildScript(
@@ -107,6 +120,7 @@ class RootedLiveViewCaptureManager(
         pcapFile: File,
         logcatFile: File,
         metadataFile: File,
+        stopSignalFile: File,
         appPid: Int
     ): String {
         val cameraHost = shellQuote(host)
@@ -114,6 +128,7 @@ class RootedLiveViewCaptureManager(
         val pcapPath = shellQuote(pcapFile.absolutePath)
         val logcatPath = shellQuote(logcatFile.absolutePath)
         val metadataPath = shellQuote(metadataFile.absolutePath)
+        val stopSignalPath = shellQuote(stopSignalFile.absolutePath)
         return """
             #!/system/bin/sh
             CAMERA_HOST=$cameraHost
@@ -121,6 +136,7 @@ class RootedLiveViewCaptureManager(
             PCAP_FILE=$pcapPath
             LOGCAT_FILE=$logcatPath
             META_FILE=$metadataPath
+            STOP_FILE=$stopSignalPath
             APP_PID=$appPid
 
             TCPDUMP_BIN=""
@@ -144,6 +160,7 @@ class RootedLiveViewCaptureManager(
             echo "Interface: ${'$'}IFACE" >> "${'$'}META_FILE"
             echo "tcpdump: ${'$'}TCPDUMP_BIN" >> "${'$'}META_FILE"
             echo "Capture running..." >> "${'$'}META_FILE"
+            rm -f "${'$'}STOP_FILE"
 
             logcat --pid="${'$'}APP_PID" -v time > "${'$'}LOGCAT_FILE" 2>&1 &
             LOGCAT_PID=${'$'}!
@@ -151,7 +168,9 @@ class RootedLiveViewCaptureManager(
             "${'$'}TCPDUMP_BIN" -i "${'$'}IFACE" -n -s 0 -U -w "${'$'}PCAP_FILE" "host ${'$'}CAMERA_HOST or host ${'$'}RELAY_HOST" >/dev/null 2>&1 &
             TCPDUMP_PID=${'$'}!
 
-            sleep $CAPTURE_DURATION_SECONDS
+            while [ ! -f "${'$'}STOP_FILE" ]; do
+              sleep 1
+            done
 
             kill -2 "${'$'}TCPDUMP_PID" 2>/dev/null
             kill "${'$'}LOGCAT_PID" 2>/dev/null
@@ -161,6 +180,7 @@ class RootedLiveViewCaptureManager(
             echo "Finished: ${'$'}(date '+%Y-%m-%d %H:%M:%S')" >> "${'$'}META_FILE"
             echo "PCAP bytes: ${'$'}(wc -c < "${'$'}PCAP_FILE" 2>/dev/null || echo 0)" >> "${'$'}META_FILE"
             echo "Logcat bytes: ${'$'}(wc -c < "${'$'}LOGCAT_FILE" 2>/dev/null || echo 0)" >> "${'$'}META_FILE"
+            rm -f "${'$'}STOP_FILE"
         """.trimIndent()
     }
 

@@ -156,7 +156,11 @@ import java.net.SocketException;
   public int read(byte[] buffer, int offset, int length) throws IOException {
     while (!closed) {
       try {
-        return dataSource.read(buffer, offset, length);
+        int bytesRead = dataSource.read(buffer, offset, length);
+        if (bytesRead > 0 && rtcpChannel != null) {
+          RtspDebugStats.recordUdpRtpPacket(bytesRead);
+        }
+        return bytesRead;
       } catch (UdpDataSource.UdpDataSourceException e) {
         if (closed) {
           return C.RESULT_END_OF_INPUT;

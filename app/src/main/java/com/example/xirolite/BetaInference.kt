@@ -42,7 +42,12 @@ object BetaInference {
             flightLogStatusText = flightLogStatusText,
             measurementUnit = measurementUnit
         )
-        val preflight = buildPreflight(networkInfo, telemetryResults, latestRemotePacket, droneState)
+        val preflight = buildPreflight(
+            networkInfo = networkInfo,
+            telemetryResults = telemetryResults,
+            relayState = relayState,
+            droneState = droneState
+        )
         val warnings = buildFlightWarnings(
             recentRemotePackets = recentRemotePackets,
             measurementUnit = measurementUnit,
@@ -292,14 +297,16 @@ object BetaInference {
     private fun buildPreflight(
         networkInfo: DroneNetworkInfo,
         telemetryResults: List<TelemetryResult>,
-        latestRemotePacket: RemoteTelemetryPacket?,
+        relayState: RelayStateUi,
         droneState: DroneStateUi
     ): List<PreflightItem> {
-        val onXiroWifi = networkInfo.localIp?.startsWith("192.168.2.") == true ||
-            networkInfo.localIp?.startsWith("192.168.1.") == true
-        val cameraConnected = latestRemotePacket != null ||
-            telemetryResults.any { it.status.startsWith("HTTP 200") } ||
-            onXiroWifi
+        val onCameraDirect = networkInfo.localIp?.startsWith("192.168.1.") == true
+        val successfulCameraCommand = telemetryResults.any {
+            it.url.contains("192.168.1.254") && it.status.startsWith("HTTP 200")
+        }
+        val relayLinkActive = relayState.status.equals("Connected", ignoreCase = true) &&
+            !relayFieldLooksUnknown(relayState.currentAirSignal)
+        val cameraConnected = onCameraDirect || successfulCameraCommand || relayLinkActive
 
         return listOf(
             PreflightItem(
@@ -406,6 +413,10 @@ object BetaInference {
                 ?.signal
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
+                ?: parsedStatus
+                    ?.signal
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
                 ?.take(16)
                 ?: "--",
             availableNetworks = RelayPayloadParser.parseWifiCandidates(wifiResult?.preview.orEmpty()),
@@ -423,6 +434,7 @@ object BetaInference {
 
         return when {
             onExtender && relaySignal != null -> "Link $relaySignal"
+            onExtender && relayState.status.equals("Connected", ignoreCase = true) -> "Link active"
             onExtender -> "Waiting for relay link"
             onCameraDirect -> "N/A direct camera"
             else -> "--"
